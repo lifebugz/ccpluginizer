@@ -100,9 +100,16 @@ function buildEntryFromMarker(marker: MarkerFile, sourceRepo: string): Marketpla
     strict: false,
     ...(marker.description !== undefined ? { description: marker.description } : {}),
     ...(marker.license !== undefined ? { license: marker.license } : {}),
+    ...(marker.homepage !== undefined ? { homepage: marker.homepage } : {}),
+    ...(marker.repository !== undefined ? { repository: marker.repository } : {}),
     ...(marker.skills !== undefined ? { skills: marker.skills } : {}),
     ...(marker.agents !== undefined ? { agents: marker.agents } : {}),
     ...(marker.commands !== undefined ? { commands: marker.commands } : {}),
+    ...(marker.hooks !== undefined ? { hooks: marker.hooks } : {}),
+    ...(marker.mcpServers !== undefined ? { mcpServers: marker.mcpServers } : {}),
+    ...(marker.outputStyles !== undefined ? { outputStyles: marker.outputStyles } : {}),
+    ...(marker.themes !== undefined ? { themes: marker.themes } : {}),
+    ...(marker.monitors !== undefined ? { monitors: marker.monitors } : {}),
   };
 }
 

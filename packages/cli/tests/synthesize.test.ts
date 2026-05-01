@@ -15,6 +15,25 @@ describe("synthesize: Layer 1 marker file wins", () => {
     expect(entry.strict).toBe(false);
     expect(entry.source).toEqual({ source: "github", repo: "test/marker-file" });
   });
+
+  test("emits all 8 component kinds when marker file declares them", () => {
+    const entry = synthesizeEntry({
+      repoRoot: join(FIXTURES, "marker-file-full"),
+      sourceRepo: "test/marker-full",
+    });
+    expect(entry.name).toBe("marker-full");
+    expect(entry.skills).toEqual(["./skills/"]);
+    expect(entry.agents).toEqual(["./agents/"]);
+    expect(entry.commands).toEqual(["./commands/"]);
+    expect(entry.hooks).toBe("./hooks/hooks.json");
+    expect(entry.mcpServers).toBe("./.mcp.json");
+    expect(entry.outputStyles).toEqual(["./styles/"]);
+    expect(entry.themes).toEqual(["./themes/"]);
+    expect(entry.monitors).toBe("./monitors.json");
+    expect(entry.license).toBe("MIT");
+    expect(entry.homepage).toBe("https://example.com");
+    expect(entry.repository).toBe("https://github.com/test/marker-full");
+  });
 });
 
 describe("synthesize: Layer 2 alone (no marker, no manifest)", () => {
