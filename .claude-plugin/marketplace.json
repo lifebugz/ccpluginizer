@@ -4,5 +4,33 @@
   "owner": {
     "name": "ccpluginizer"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "elysiajs-skills",
+      "source": {
+        "source": "github",
+        "repo": "elysiajs/skills"
+      },
+      "strict": false,
+      "skills": [
+        "./elysia/"
+      ]
+    },
+    {
+      "name": "open-circle-agent-skills",
+      "source": {
+        "source": "github",
+        "repo": "open-circle/agent-skills"
+      },
+      "strict": false,
+      "description": "Agent Skills for Open Circle projects including Valibot and Formisch",
+      "author": "Open Circle",
+      "homepage": "https://opencircle.dev",
+      "repository": "https://github.com/open-circle/agent-skills",
+      "skills": [
+        "./skills/valibot",
+        "./skills/formisch"
+      ]
+    }
+  ]
 }

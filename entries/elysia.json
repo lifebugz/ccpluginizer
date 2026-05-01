@@ -1,0 +1,11 @@
+{
+  "name": "elysiajs-skills",
+  "source": {
+    "source": "github",
+    "repo": "elysiajs/skills"
+  },
+  "strict": false,
+  "skills": [
+    "./elysia/"
+  ]
+}

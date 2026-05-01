@@ -1,0 +1,16 @@
+{
+  "name": "open-circle-agent-skills",
+  "source": {
+    "source": "github",
+    "repo": "open-circle/agent-skills"
+  },
+  "strict": false,
+  "skills": [
+    "./skills/valibot",
+    "./skills/formisch"
+  ],
+  "description": "Agent Skills for Open Circle projects including Valibot and Formisch",
+  "homepage": "https://opencircle.dev",
+  "repository": "https://github.com/open-circle/agent-skills",
+  "author": "Open Circle"
+}
