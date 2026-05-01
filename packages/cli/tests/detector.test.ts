@@ -4,6 +4,7 @@ import { checkMarketplaceGuard } from "../src/detector/marketplaceGuard.ts";
 import { detectMarkerFile } from "../src/detector/markerFile.ts";
 import { detectConventions } from "../src/detector/conventions.ts";
 import { detectNonStandardManifest } from "../src/detector/nonStandardManifest.ts";
+import { detectContentSniff } from "../src/detector/contentSniff.ts";
 import { AlreadyMarketplaceError } from "../src/errors.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
@@ -81,5 +82,20 @@ describe("Layer 2.5: non-standard manifest", () => {
 
   test("ignores plugin.json (would be standard, not our concern)", () => {
     // covered indirectly — already-marketplace fixture has marketplace.json, not plugin.json
+  });
+});
+
+describe("Layer 3: content sniff", () => {
+  test("finds **/SKILL.md outside conventional folders", () => {
+    const findings = detectContentSniff(join(FIXTURES, "elysia-like"));
+    const skills = findings.find((f) => f.kind === "skills");
+    expect(skills).toBeDefined();
+    expect(skills?.paths).toEqual(["./elysia/"]);
+    expect(skills?.confidence).toBe("medium");
+    expect(skills?.source).toBe("sniff");
+  });
+
+  test("returns empty array for repos with no markdown", () => {
+    expect(detectContentSniff(join(FIXTURES, "already-marketplace"))).toEqual([]);
   });
 });
