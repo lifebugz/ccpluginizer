@@ -1,3 +1,5 @@
+import { resolveGithub } from "./github.ts";
+
 export type SourceInput =
   | { readonly kind: "github"; readonly repo: string }
   | { readonly kind: "local"; readonly path: string };
@@ -24,4 +26,12 @@ export function parseSourceInput(input: string): SourceInput {
   }
 
   throw new Error(`Cannot parse source input: ${trimmed}`);
+}
+
+export async function resolveSource(input: string): Promise<string> {
+  const parsed = parseSourceInput(input);
+  if (parsed.kind === "local") {
+    return parsed.path;
+  }
+  return resolveGithub(parsed.repo);
 }

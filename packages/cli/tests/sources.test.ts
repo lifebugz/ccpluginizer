@@ -53,3 +53,11 @@ describe("resolveGithub", () => {
     60_000,
   );
 });
+
+describe("resolveSource", () => {
+  test("returns local path unchanged for local input", async () => {
+    const { resolveSource } = await import("../src/sources/index.ts");
+    const path = await resolveSource("./tests/fixtures/elysia-like");
+    expect(path).toBe("./tests/fixtures/elysia-like");
+  });
+});
