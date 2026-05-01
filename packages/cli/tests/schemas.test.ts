@@ -122,3 +122,48 @@ describe("AgentFrontmatterSchema", () => {
     expect(result.success).toBe(false);
   });
 });
+
+import { MarketplaceEntrySchema } from "../src/schemas/marketplaceEntry.ts";
+
+describe("MarketplaceEntrySchema", () => {
+  test("accepts a complete strict-false entry", () => {
+    const result = v.safeParse(MarketplaceEntrySchema, {
+      name: "elysia",
+      source: { source: "github", repo: "elysiajs/skills" },
+      strict: false,
+      skills: ["./elysia/"],
+      license: "MIT",
+      description: "Skills for Elysia",
+      homepage: "https://github.com/elysiajs/skills",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("rejects entries missing name", () => {
+    const result = v.safeParse(MarketplaceEntrySchema, {
+      source: { source: "github", repo: "x/y" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("rejects entries with relative path missing ./ prefix", () => {
+    const result = v.safeParse(MarketplaceEntrySchema, {
+      name: "elysia",
+      source: { source: "github", repo: "elysiajs/skills" },
+      skills: ["elysia/"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("accepts git-subdir source", () => {
+    const result = v.safeParse(MarketplaceEntrySchema, {
+      name: "x",
+      source: {
+        source: "git-subdir",
+        url: "https://github.com/owner/monorepo.git",
+        path: "tools/myplugin",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+});
