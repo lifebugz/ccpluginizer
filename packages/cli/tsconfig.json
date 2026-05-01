@@ -1,28 +1,11 @@
 {
+  "extends": [
+    "@tsconfig/bun/tsconfig.json",
+    "@tsconfig/strictest/tsconfig.json"
+  ],
   "compilerOptions": {
-    "lib": ["ESNext"],
-    "target": "ESNext",
-    "module": "Preserve",
-    "moduleDetection": "force",
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "noEmit": true,
     "types": ["bun"],
-
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "noImplicitReturns": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "exactOptionalPropertyTypes": true,
     "noUncheckedSideEffectImports": true,
-    "useUnknownInCatchVariables": true,
-    "skipLibCheck": true,
-
     "outDir": "./dist"
   },
   "include": ["src/**/*", "tests/**/*", "eslint.config.ts"],
