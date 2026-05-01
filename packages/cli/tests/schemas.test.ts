@@ -41,3 +41,43 @@ describe("MarkerFileSchema", () => {
     expect(result.success).toBe(false);
   });
 });
+
+import { NonStandardManifestSchema } from "../src/schemas/nonStandardManifest.ts";
+
+describe("NonStandardManifestSchema", () => {
+  test("accepts the open-circle/agent-skills shape", () => {
+    const result = v.safeParse(NonStandardManifestSchema, {
+      name: "Open Circle Agent Skills",
+      description: "Agent Skills for Open Circle projects including Valibot and Formisch",
+      version: "1.0.0",
+      author: "Open Circle",
+      homepage: "https://opencircle.dev",
+      repository: "https://github.com/open-circle/agent-skills",
+      skills: ["skills/valibot", "skills/formisch"],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts paths WITHOUT ./ prefix (lenient — normalizer fixes later)", () => {
+    const result = v.safeParse(NonStandardManifestSchema, {
+      name: "test",
+      skills: ["skills/foo"],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts unknown keys (foreign convention — not strict)", () => {
+    const result = v.safeParse(NonStandardManifestSchema, {
+      name: "test",
+      unknownField: 42,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts author as string OR object", () => {
+    const r1 = v.safeParse(NonStandardManifestSchema, { author: "Alice" });
+    const r2 = v.safeParse(NonStandardManifestSchema, { author: { name: "Alice" } });
+    expect(r1.success).toBe(true);
+    expect(r2.success).toBe(true);
+  });
+});
