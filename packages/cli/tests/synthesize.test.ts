@@ -16,3 +16,24 @@ describe("synthesize: Layer 1 marker file wins", () => {
     expect(entry.source).toEqual({ source: "github", repo: "test/marker-file" });
   });
 });
+
+describe("synthesize: Layer 2 alone (no marker, no manifest)", () => {
+  test("emits skills entry from skills-only fixture", () => {
+    const entry = synthesizeEntry({
+      repoRoot: join(FIXTURES, "skills-only"),
+      sourceRepo: "test/skills-only",
+    });
+    expect(entry.name).toBe("test-skills-only");
+    expect(entry.skills).toEqual(["./skills/"]);
+    expect(entry.strict).toBe(false);
+  });
+
+  test("emits dotfiles-style path for .claude/ skills", () => {
+    const entry = synthesizeEntry({
+      repoRoot: join(FIXTURES, "dotfiles-like"),
+      sourceRepo: "test/dotfiles-like",
+    });
+    expect(entry.skills).toEqual(["./.claude/skills/"]);
+    expect(entry.agents).toEqual(["./.claude/agents/"]);
+  });
+});
