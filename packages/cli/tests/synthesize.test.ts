@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { synthesizeEntry } from "../src/detector/synthesize.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
@@ -33,6 +35,26 @@ describe("synthesize: Layer 1 marker file wins", () => {
     expect(entry.license).toBe("MIT");
     expect(entry.homepage).toBe("https://example.com");
     expect(entry.repository).toBe("https://github.com/test/marker-full");
+  });
+
+  test("drops marker paths that don't exist on disk", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-marker-missing-"));
+    try {
+      mkdirSync(join(tmp, "elysia"), { recursive: true });
+      writeFileSync(join(tmp, "elysia/SKILL.md"), "---\ndescription: x\n---\n");
+      writeFileSync(
+        join(tmp, ".ccpluginizer.json"),
+        JSON.stringify({
+          name: "missing-path-test",
+          skills: ["./elysia/", "./does-not-exist/"],
+        }),
+      );
+
+      const entry = synthesizeEntry({ repoRoot: tmp, sourceRepo: "test/missing" });
+      expect(entry.skills).toEqual(["./elysia/"]); // missing dropped
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

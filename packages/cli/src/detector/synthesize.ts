@@ -19,7 +19,7 @@ export function synthesizeEntry(input: SynthesizeInput): MarketplaceEntry {
 
   const marker = detectMarkerFile(input.repoRoot);
   if (marker !== null) {
-    return buildEntryFromMarker(marker, input.sourceRepo);
+    return buildEntryFromMarker(marker, input.sourceRepo, input.repoRoot);
   }
 
   const conventionFindings = detectConventions(input.repoRoot);
@@ -93,7 +93,27 @@ function mergeManifestMetadata(
   };
 }
 
-function buildEntryFromMarker(marker: MarkerFile, sourceRepo: string): MarketplaceEntry {
+function buildEntryFromMarker(
+  marker: MarkerFile,
+  sourceRepo: string,
+  repoRoot: string,
+): MarketplaceEntry {
+  const normalizeIfPresent = (paths: readonly string[] | undefined): string[] | undefined => {
+    if (paths === undefined) {
+      return undefined;
+    }
+    const { kept } = normalizePathsAgainstRepo(repoRoot, paths);
+    return kept.length > 0 ? [...kept] : undefined;
+  };
+
+  const skills = normalizeIfPresent(marker.skills);
+  const agents = normalizeIfPresent(marker.agents);
+  const commands = normalizeIfPresent(marker.commands);
+  const outputStyles = normalizeIfPresent(marker.outputStyles);
+  const themes = normalizeIfPresent(marker.themes);
+
+  // Note: hooks, mcpServers, monitors are scalar string paths (not arrays),
+  // so they are not run through normalizePathsAgainstRepo in v0.1.1.
   return {
     name: marker.name,
     source: makeGithubSource(sourceRepo),
@@ -102,13 +122,13 @@ function buildEntryFromMarker(marker: MarkerFile, sourceRepo: string): Marketpla
     ...(marker.license !== undefined ? { license: marker.license } : {}),
     ...(marker.homepage !== undefined ? { homepage: marker.homepage } : {}),
     ...(marker.repository !== undefined ? { repository: marker.repository } : {}),
-    ...(marker.skills !== undefined ? { skills: marker.skills } : {}),
-    ...(marker.agents !== undefined ? { agents: marker.agents } : {}),
-    ...(marker.commands !== undefined ? { commands: marker.commands } : {}),
+    ...(skills !== undefined ? { skills } : {}),
+    ...(agents !== undefined ? { agents } : {}),
+    ...(commands !== undefined ? { commands } : {}),
     ...(marker.hooks !== undefined ? { hooks: marker.hooks } : {}),
     ...(marker.mcpServers !== undefined ? { mcpServers: marker.mcpServers } : {}),
-    ...(marker.outputStyles !== undefined ? { outputStyles: marker.outputStyles } : {}),
-    ...(marker.themes !== undefined ? { themes: marker.themes } : {}),
+    ...(outputStyles !== undefined ? { outputStyles } : {}),
+    ...(themes !== undefined ? { themes } : {}),
     ...(marker.monitors !== undefined ? { monitors: marker.monitors } : {}),
   };
 }
