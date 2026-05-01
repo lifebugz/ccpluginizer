@@ -2,7 +2,7 @@ import { checkMarketplaceGuard } from "./marketplaceGuard.ts";
 import { detectMarkerFile } from "./markerFile.ts";
 import { detectConventions } from "./conventions.ts";
 import { detectNonStandardManifest } from "./nonStandardManifest.ts";
-// import { detectContentSniff } from "./contentSniff.ts"; // Re-add in Task 8.4
+import { detectContentSniff } from "./contentSniff.ts";
 import { normalizePathsAgainstRepo } from "./normalize.ts";
 import type { Finding, ComponentKind } from "./types.ts";
 import type { MarketplaceEntry, Source } from "../schemas/marketplaceEntry.ts";
@@ -24,6 +24,7 @@ export function synthesizeEntry(input: SynthesizeInput): MarketplaceEntry {
 
   const conventionFindings = detectConventions(input.repoRoot);
   const manifestResult = detectNonStandardManifest(input.repoRoot);
+  const sniffFindings = detectContentSniff(input.repoRoot);
 
   const findings: Finding[] = [...conventionFindings];
   const manifestKindsWithFindings = new Set<ComponentKind>();
@@ -33,14 +34,21 @@ export function synthesizeEntry(input: SynthesizeInput): MarketplaceEntry {
   }
 
   // Remove convention findings for kinds that have manifest findings
-  const finalFindings = findings.filter((f) => {
+  let mergedFindings = findings.filter((f) => {
     if (f.source === "convention" && manifestKindsWithFindings.has(f.kind)) {
       return false;
     }
     return true;
   });
 
-  const entry = buildEntryFromFindings(finalFindings, input.repoRoot, input.sourceRepo);
+  // Layer 3 sniff: fill gaps for kinds NOT yet covered by any prior layer
+  for (const sniffF of sniffFindings) {
+    if (!hasKind(mergedFindings, sniffF.kind)) {
+      mergedFindings = [...mergedFindings, sniffF];
+    }
+  }
+
+  const entry = buildEntryFromFindings(mergedFindings, input.repoRoot, input.sourceRepo);
   if (manifestResult !== null) {
     return mergeManifestMetadata(entry, manifestResult.manifest);
   }
@@ -118,6 +126,15 @@ function buildEntryFromFindings(
     strict: false,
     ...componentEntries,
   };
+}
+
+function hasKind(findings: readonly Finding[], kind: ComponentKind): boolean {
+  for (const f of findings) {
+    if (f.kind === kind) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function groupByKind(findings: readonly Finding[]): Map<ComponentKind, Finding[]> {

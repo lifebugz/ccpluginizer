@@ -51,3 +51,13 @@ describe("synthesize: Layer 2 + 2.5 merge", () => {
     expect(entry.author).toBe("Open Circle");
   });
 });
+
+describe("synthesize: Layer 3 fallback", () => {
+  test("emits skills entry from elysia-like (no manifest, no convention folder)", () => {
+    const entry = synthesizeEntry({
+      repoRoot: join(FIXTURES, "elysia-like"),
+      sourceRepo: "elysiajs/skills",
+    });
+    expect(entry.skills).toEqual(["./elysia/"]);
+  });
+});
