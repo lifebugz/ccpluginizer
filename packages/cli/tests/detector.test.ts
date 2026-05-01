@@ -1,0 +1,20 @@
+import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { checkMarketplaceGuard } from "../src/detector/marketplaceGuard.ts";
+import { AlreadyMarketplaceError } from "../src/errors.ts";
+
+const FIXTURES = join(import.meta.dirname, "fixtures");
+
+describe("Layer 0: marketplace guard", () => {
+  test("throws AlreadyMarketplaceError when .claude-plugin/marketplace.json exists", () => {
+    expect(() => {
+      checkMarketplaceGuard(join(FIXTURES, "already-marketplace"));
+    }).toThrow(AlreadyMarketplaceError);
+  });
+
+  test("returns silently for repos without that file", () => {
+    expect(() => {
+      checkMarketplaceGuard(FIXTURES);
+    }).not.toThrow();
+  });
+});
