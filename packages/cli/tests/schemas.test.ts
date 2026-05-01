@@ -43,6 +43,7 @@ describe("MarkerFileSchema", () => {
 });
 
 import { NonStandardManifestSchema } from "../src/schemas/nonStandardManifest.ts";
+import { SkillFrontmatterSchema, AgentFrontmatterSchema } from "../src/schemas/frontmatter.ts";
 
 describe("NonStandardManifestSchema", () => {
   test("accepts the open-circle/agent-skills shape", () => {
@@ -79,5 +80,45 @@ describe("NonStandardManifestSchema", () => {
     const r2 = v.safeParse(NonStandardManifestSchema, { author: { name: "Alice" } });
     expect(r1.success).toBe(true);
     expect(r2.success).toBe(true);
+  });
+});
+
+describe("SkillFrontmatterSchema", () => {
+  test("accepts SKILL.md frontmatter with description", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, {
+      description: "Adds a /quality-review skill for quick code reviews",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts SKILL.md frontmatter with optional name and disable-model-invocation", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, {
+      name: "quality-review",
+      description: "Reviews code",
+      "disable-model-invocation": true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("rejects frontmatter without description (it's the marker for skill-shape)", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, { name: "foo" });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("AgentFrontmatterSchema", () => {
+  test("accepts agent frontmatter with name and description", () => {
+    const result = v.safeParse(AgentFrontmatterSchema, {
+      name: "code-reviewer",
+      description: "Reviews code thoroughly",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("rejects agent frontmatter missing name", () => {
+    const result = v.safeParse(AgentFrontmatterSchema, {
+      description: "Reviews code",
+    });
+    expect(result.success).toBe(false);
   });
 });
