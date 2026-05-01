@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseSourceInput } from "../src/sources/index.ts";
+import { resolveGithub } from "../src/sources/github.ts";
+import { existsSync } from "node:fs";
 
 describe("parseSourceInput", () => {
   test("parses owner/repo shorthand", () => {
@@ -38,4 +40,16 @@ describe("parseSourceInput", () => {
     const r = parseSourceInput("./tests/fixtures/elysia-like");
     expect(r.kind).toBe("local");
   });
+});
+
+describe("resolveGithub", () => {
+  test(
+    "clones a public repo into a tmpdir and returns the path",
+    async () => {
+      // Use a tiny known-good public repo for this test
+      const path = await resolveGithub("elysiajs/skills");
+      expect(existsSync(path)).toBe(true);
+    },
+    60_000,
+  );
 });
