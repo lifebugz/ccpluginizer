@@ -1,0 +1,6 @@
+{
+  "name": "elysia-marker",
+  "description": "Skills for Elysia (with marker file)",
+  "skills": ["./elysia/"],
+  "license": "MIT"
+}
