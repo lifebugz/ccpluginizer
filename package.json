@@ -1,0 +1,16 @@
+{
+  "name": "ccpluginizer-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pluginize non-plugin Claude Code resources",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build:marketplace": "bun scripts/build-marketplace.ts",
+    "typecheck": "bun --filter '*' run typecheck",
+    "lint": "bun --filter '*' run lint",
+    "test": "bun test",
+    "build": "bun --filter '*' run build"
+  }
+}
