@@ -28,6 +28,15 @@ export function parseSourceInput(input: string): SourceInput {
   throw new Error(`Cannot parse source input: ${trimmed}`);
 }
 
+export function inferSourceRepo(input: string): string {
+  const parsed = parseSourceInput(input);
+  if (parsed.kind === "github") {
+    return parsed.repo;
+  }
+  const basename = parsed.path.split("/").filter(Boolean).pop() ?? "unknown";
+  return `local/${basename}`;
+}
+
 export async function resolveSource(input: string): Promise<string> {
   const parsed = parseSourceInput(input);
   if (parsed.kind === "local") {
