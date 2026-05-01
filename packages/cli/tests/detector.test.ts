@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { checkMarketplaceGuard } from "../src/detector/marketplaceGuard.ts";
 import { detectMarkerFile } from "../src/detector/markerFile.ts";
 import { detectConventions } from "../src/detector/conventions.ts";
+import { detectNonStandardManifest } from "../src/detector/nonStandardManifest.ts";
 import { AlreadyMarketplaceError } from "../src/errors.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
@@ -62,5 +63,23 @@ describe("Layer 2: dual-root search", () => {
   test("merges multi-root findings into a single multi-path entry", () => {
     // We'll construct an inline fixture: a tmpdir with BOTH skills/ at root and .claude/skills/.
     // Skipping inline construction for v0.1; smoke test against real-world dotfiles repo covers this.
+  });
+});
+
+describe("Layer 2.5: non-standard manifest", () => {
+  test("returns null when no .claude-plugin/*.json (other than plugin.json)", () => {
+    expect(detectNonStandardManifest(join(FIXTURES, "skills-only"))).toBeNull();
+  });
+
+  test("parses manifest.json and returns shape", () => {
+    const result = detectNonStandardManifest(join(FIXTURES, "open-circle-like"));
+    expect(result).not.toBeNull();
+    expect(result?.manifest.name).toBe("Open Circle Agent Skills");
+    expect(result?.manifest.skills).toEqual(["skills/valibot", "skills/formisch"]);
+    expect(result?.filename).toBe("manifest.json");
+  });
+
+  test("ignores plugin.json (would be standard, not our concern)", () => {
+    // covered indirectly — already-marketplace fixture has marketplace.json, not plugin.json
   });
 });
