@@ -17,7 +17,9 @@ const FILE_KINDS: readonly { file: string; kind: ComponentKind }[] = [
 ];
 
 export function detectConventions(repoRoot: string): readonly Finding[] {
-  return scanRoot(repoRoot, "");
+  const rootFindings = scanRoot(repoRoot, "");
+  const dotfilesFindings = scanRoot(repoRoot, ".claude");
+  return mergeByKind([...rootFindings, ...dotfilesFindings]);
 }
 
 function scanRoot(repoRoot: string, prefix: string): readonly Finding[] {
@@ -50,4 +52,29 @@ function scanRoot(repoRoot: string, prefix: string): readonly Finding[] {
   }
 
   return findings;
+}
+
+function mergeByKind(findings: readonly Finding[]): readonly Finding[] {
+  const byKind = new Map<ComponentKind, Finding>();
+  for (const finding of findings) {
+    const existing = byKind.get(finding.kind);
+    if (existing === undefined) {
+      byKind.set(finding.kind, finding);
+    } else {
+      const mergedPaths = [...new Set([...existing.paths, ...finding.paths])];
+      const mergedConfidence: Finding["confidence"] =
+        existing.confidence === "high" || finding.confidence === "high"
+          ? "high"
+          : existing.confidence === "medium" || finding.confidence === "medium"
+            ? "medium"
+            : "low";
+      byKind.set(finding.kind, {
+        kind: finding.kind,
+        paths: mergedPaths,
+        confidence: mergedConfidence,
+        source: existing.source,
+      });
+    }
+  }
+  return Array.from(byKind.values());
 }

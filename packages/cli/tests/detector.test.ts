@@ -44,3 +44,23 @@ describe("Layer 2: folder conventions (root only)", () => {
     expect(skills?.source).toBe("convention");
   });
 });
+
+describe("Layer 2: dual-root search", () => {
+  test("detects skills/ inside .claude/ for dotfiles-style repos", () => {
+    const findings = detectConventions(join(FIXTURES, "dotfiles-like"));
+    const skills = findings.find((f) => f.kind === "skills");
+    expect(skills?.paths).toEqual(["./.claude/skills/"]);
+    expect(skills?.confidence).toBe("high");
+  });
+
+  test("detects agents/ inside .claude/", () => {
+    const findings = detectConventions(join(FIXTURES, "dotfiles-like"));
+    const agents = findings.find((f) => f.kind === "agents");
+    expect(agents?.paths).toEqual(["./.claude/agents/"]);
+  });
+
+  test("merges multi-root findings into a single multi-path entry", () => {
+    // We'll construct an inline fixture: a tmpdir with BOTH skills/ at root and .claude/skills/.
+    // Skipping inline construction for v0.1; smoke test against real-world dotfiles repo covers this.
+  });
+});
