@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { normalizePath } from "../src/detector/normalize.ts";
+import { describe, expect, test, afterAll } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { normalizePath, normalizePathsAgainstRepo } from "../src/detector/normalize.ts";
 import { PathNormalizationError } from "../src/errors.ts";
 
 describe("normalizePath: traversal rejection", () => {
@@ -39,5 +42,26 @@ describe("normalizePath: ./ prefix", () => {
 
   test("prepends ./ to dotfiles paths", () => {
     expect(normalizePath(".claude/skills/")).toBe("./.claude/skills/");
+  });
+});
+
+describe("normalizePathsAgainstRepo: existence verification", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ccp-norm-"));
+  mkdirSync(join(tmp, "skills/valibot"), { recursive: true });
+  writeFileSync(join(tmp, "skills/valibot/SKILL.md"), "---\ndescription: x\n---\n");
+
+  test("keeps existing paths and drops missing ones", () => {
+    const { kept, dropped } = normalizePathsAgainstRepo(tmp, ["./skills/valibot", "./skills/missing"]);
+    expect(kept).toEqual(["./skills/valibot"]);
+    expect(dropped).toEqual(["./skills/missing"]);
+  });
+
+  test("normalizes bare paths AND verifies them", () => {
+    const { kept } = normalizePathsAgainstRepo(tmp, ["skills/valibot"]);
+    expect(kept).toEqual(["./skills/valibot"]);
+  });
+
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true });
   });
 });
