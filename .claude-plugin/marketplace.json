@@ -17,6 +17,23 @@
       ]
     },
     {
+      "name": "jarrodwatts-claude-code-config",
+      "source": {
+        "source": "github",
+        "repo": "jarrodwatts/claude-code-config"
+      },
+      "strict": false,
+      "skills": [
+        "./skills/"
+      ],
+      "agents": [
+        "./agents/"
+      ],
+      "commands": [
+        "./commands/"
+      ]
+    },
+    {
       "name": "open-circle-agent-skills",
       "source": {
         "source": "github",
