@@ -37,3 +37,17 @@ describe("synthesize: Layer 2 alone (no marker, no manifest)", () => {
     expect(entry.agents).toEqual(["./.claude/agents/"]);
   });
 });
+
+describe("synthesize: Layer 2 + 2.5 merge", () => {
+  test("uses Layer 2 paths and Layer 2.5 metadata", () => {
+    const entry = synthesizeEntry({
+      repoRoot: join(FIXTURES, "open-circle-like"),
+      sourceRepo: "open-circle/agent-skills",
+    });
+    expect(entry.skills).toEqual(["./skills/valibot", "./skills/formisch"]);
+    expect(entry.description).toBe("Agent Skills for Open Circle projects including Valibot and Formisch");
+    expect(entry.homepage).toBe("https://opencircle.dev");
+    expect(entry.repository).toBe("https://github.com/open-circle/agent-skills");
+    expect(entry.author).toBe("Open Circle");
+  });
+});
