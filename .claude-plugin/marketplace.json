@@ -1,0 +1,8 @@
+{
+  "name": "ccpluginizer",
+  "description": "Marketplace of pluginized non-plugin Claude Code repos",
+  "owner": {
+    "name": "ccpluginizer"
+  },
+  "plugins": []
+}
