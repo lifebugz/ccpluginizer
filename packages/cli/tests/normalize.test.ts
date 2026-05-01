@@ -26,3 +26,18 @@ describe("normalizePath: absolute path rejection", () => {
     expect(() => normalizePath("C:/foo")).toThrow(PathNormalizationError);
   });
 });
+
+describe("normalizePath: ./ prefix", () => {
+  test("preserves paths already starting with ./", () => {
+    expect(normalizePath("./skills/")).toBe("./skills/");
+  });
+
+  test("prepends ./ to bare relative paths", () => {
+    expect(normalizePath("skills/")).toBe("./skills/");
+    expect(normalizePath("skills/valibot")).toBe("./skills/valibot");
+  });
+
+  test("prepends ./ to dotfiles paths", () => {
+    expect(normalizePath(".claude/skills/")).toBe("./.claude/skills/");
+  });
+});

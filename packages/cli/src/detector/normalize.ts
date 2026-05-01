@@ -10,5 +10,8 @@ export function normalizePath(input: string): string {
   if (/^[A-Za-z]:[/\\]/.test(input)) {
     throw new PathNormalizationError(input, "windows-style absolute paths not allowed");
   }
-  return input;
+  if (input.startsWith("./")) {
+    return input;
+  }
+  return `./${input}`;
 }
