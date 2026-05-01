@@ -11,3 +11,18 @@ describe("normalizePath: traversal rejection", () => {
     expect(() => normalizePath("./foo/../bar")).toThrow(PathNormalizationError);
   });
 });
+
+describe("normalizePath: absolute path rejection", () => {
+  test("rejects unix absolute paths", () => {
+    expect(() => normalizePath("/foo/bar")).toThrow(PathNormalizationError);
+  });
+
+  test("rejects home-relative paths", () => {
+    expect(() => normalizePath("~/foo")).toThrow(PathNormalizationError);
+  });
+
+  test("rejects windows-style absolute paths", () => {
+    expect(() => normalizePath("C:\\foo")).toThrow(PathNormalizationError);
+    expect(() => normalizePath("C:/foo")).toThrow(PathNormalizationError);
+  });
+});
