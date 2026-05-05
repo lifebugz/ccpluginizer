@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup npm auth
+        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > .npmrc
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Quality gates
+        run: |
+          bun run --filter '@ccpluginizer/cli' typecheck
+          bun run --filter '@ccpluginizer/cli' lint
+          bun --filter='@ccpluginizer/cli' test
+          bun run --filter '@ccpluginizer/cli' build
+
+      - name: Create Release PR or publish
+        uses: changesets/action@v1
+        with:
+          version: bun run ci:version
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+          publish: bun run ci:publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
