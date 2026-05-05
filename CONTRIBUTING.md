@@ -5,7 +5,10 @@ Thank you for considering an addition to ccpluginizer's catalog.
 ## Submit an entry
 
 ```bash
-bunx ccpluginizer scan <owner/repo>
+# After installing globally (bun add -g @ccpluginizer/cli):
+ccpluginizer scan <owner/repo>
+# Or one-shot without installing:
+bunx --package=@ccpluginizer/cli ccpluginizer scan <owner/repo>
 # Review the output, save to entries/<name>.json
 bun scripts/build-marketplace.ts  # Verify it merges cleanly
 ```
