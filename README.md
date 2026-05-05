@@ -43,7 +43,7 @@ One-shot (no install):
 bunx --package=@ccpluginizer/cli ccpluginizer scan <owner/repo>
 ```
 
-Note: `bunx @ccpluginizer/cli` does not work directly — bunx looks for a bin matching the unscoped portion (`cli`), not `ccpluginizer`. Use the `--package=` form above for one-shot invocation.
+Note: Using `--package=@ccpluginizer/cli` makes the bin resolution explicit and unambiguous. While `bunx @ccpluginizer/cli` may work when the package has exactly one bin, the explicit `--package=` form matches Bun's documented pattern for scoped CLI packages (e.g., `bunx --package @angular/cli ng`) and stays correct if more bins are added later.
 
 ## Disclaimer
 
