@@ -15,13 +15,13 @@ jobs:
           bun-version: latest
       - run: bun install
       - name: Typecheck CLI
-        run: bun --filter ccpluginizer run typecheck
+        run: bun --filter '@ccpluginizer/cli' run typecheck
       - name: Lint CLI
-        run: bun --filter ccpluginizer run lint
+        run: bun --filter '@ccpluginizer/cli' run lint
       - name: Test CLI
-        run: bun --filter ccpluginizer test
+        run: bun --filter '@ccpluginizer/cli' test
       - name: Build CLI
-        run: bun --filter ccpluginizer run build
+        run: bun --filter '@ccpluginizer/cli' run build
       - name: Build marketplace.json
         run: bun scripts/build-marketplace.ts
       - name: Validate each entry
