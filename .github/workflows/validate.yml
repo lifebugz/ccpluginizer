@@ -2,26 +2,24 @@ name: validate
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - run: bun install
       - name: Typecheck CLI
-        run: bun --filter '@ccpluginizer/cli' run typecheck
+        run: bun run --filter '@ccpluginizer/cli' typecheck
       - name: Lint CLI
-        run: bun --filter '@ccpluginizer/cli' run lint
+        run: bun run --filter '@ccpluginizer/cli' lint
       - name: Test CLI
-        run: bun --filter '@ccpluginizer/cli' test
+        run: bun --filter='@ccpluginizer/cli' test
       - name: Build CLI
-        run: bun --filter '@ccpluginizer/cli' run build
+        run: bun run --filter '@ccpluginizer/cli' build
       - name: Build marketplace.json
         run: bun scripts/build-marketplace.ts
       - name: Validate each entry
@@ -33,3 +31,17 @@ jobs:
         run: |
           cd packages/cli
           bun outdated --filter @typescript-eslint/* --filter eslint --filter typescript --filter valibot || true
+
+  changeset-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Verify changeset present
+        run: bunx changeset status --since=origin/${{ github.base_ref }}
