@@ -12,7 +12,7 @@
     "lint": "bun --filter '*' run lint",
     "test": "bun test",
     "build": "bun --filter '*' run build",
-    "ci:version": "changeset version && bun update",
+    "ci:version": "changeset version",
     "ci:publish": "for dir in packages/*; do (cd \"$dir\" && bun publish) || exit 1; done && changeset tag"
   },
   "dependencies": {
