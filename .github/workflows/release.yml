@@ -24,17 +24,24 @@ jobs:
           bun-version: latest
 
       - name: Setup npm auth
-        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > .npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN repo secret is not set. Provision it before merging (see CONTRIBUTING.md)."
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > "$HOME/.npmrc"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Quality gates
         run: |
-          bun run --filter '@ccpluginizer/ccpluginizer' typecheck
-          bun run --filter '@ccpluginizer/ccpluginizer' lint
-          bun --filter='@ccpluginizer/ccpluginizer' test
-          bun run --filter '@ccpluginizer/ccpluginizer' build
+          bun run --filter '@ccpluginizer/*' typecheck
+          bun run --filter '@ccpluginizer/*' lint
+          bun --filter='@ccpluginizer/*' test
+          bun run --filter '@ccpluginizer/*' build
 
       - name: Create Release PR or publish
         uses: changesets/action@v1
