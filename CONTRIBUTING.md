@@ -5,10 +5,10 @@ Thank you for considering an addition to ccpluginizer's catalog.
 ## Submit an entry
 
 ```bash
-# After installing globally (bun add -g @ccpluginizer/cli):
+# After installing globally (bun add -g @ccpluginizer/ccpluginizer):
 ccpluginizer scan <owner/repo>
 # Or one-shot without installing:
-bunx --package=@ccpluginizer/cli ccpluginizer scan <owner/repo>
+bunx @ccpluginizer/ccpluginizer scan <owner/repo>
 # Review the output, save to entries/<name>.json
 bun scripts/build-marketplace.ts  # Verify it merges cleanly
 ```
@@ -70,12 +70,12 @@ Releases are automated. Do not run `bun publish` manually.
 
 ### Pre-flight (before first release)
 
-The `NPM_TOKEN` secret must exist in repo secrets before merging the scaffolding PR that adds Changesets. Generate an npm Automation token (granular access scoped to `@ccpluginizer/cli` or the entire `@ccpluginizer` scope) and add it at Settings → Secrets and variables → Actions.
+The `NPM_TOKEN` secret must exist in repo secrets before merging the scaffolding PR that adds Changesets. Generate an npm Automation token (granular access scoped to `@ccpluginizer/ccpluginizer` or the entire `@ccpluginizer` scope) and add it at Settings → Secrets and variables → Actions.
 
 ### Yanking a release
 
-`npm unpublish @ccpluginizer/cli@<version>` within 72 hours of publish. After 72h, contact npm support.
+`npm unpublish @ccpluginizer/ccpluginizer@<version>` within 72 hours of publish. After 72h, contact npm support.
 
 ### Adding a workspace dependency between packages
 
-If you add an internal `workspace:*` dependency between packages (e.g., a future `@ccpluginizer/utils` consumed by `@ccpluginizer/cli`), re-verify with `bun pm pack` that the published tarball still has concrete version specifiers (no `workspace:*` strings survive). `bun publish` strips workspace protocols at pack time, but it's worth confirming for any new dependency shape.
+If you add an internal `workspace:*` dependency between packages (e.g., a future `@ccpluginizer/utils` consumed by `@ccpluginizer/ccpluginizer`), re-verify with `bun pm pack` that the published tarball still has concrete version specifiers (no `workspace:*` strings survive). `bun publish` strips workspace protocols at pack time, but it's worth confirming for any new dependency shape.

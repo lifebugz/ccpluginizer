@@ -31,10 +31,10 @@ jobs:
 
       - name: Quality gates
         run: |
-          bun run --filter '@ccpluginizer/cli' typecheck
-          bun run --filter '@ccpluginizer/cli' lint
-          bun --filter='@ccpluginizer/cli' test
-          bun run --filter '@ccpluginizer/cli' build
+          bun run --filter '@ccpluginizer/ccpluginizer' typecheck
+          bun run --filter '@ccpluginizer/ccpluginizer' lint
+          bun --filter='@ccpluginizer/ccpluginizer' test
+          bun run --filter '@ccpluginizer/ccpluginizer' build
 
       - name: Create Release PR or publish
         uses: changesets/action@v1

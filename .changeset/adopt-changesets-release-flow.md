@@ -1,5 +1,5 @@
 ---
-"@ccpluginizer/cli": minor
+"@ccpluginizer/ccpluginizer": minor
 ---
 
 Adopt Changesets release flow.

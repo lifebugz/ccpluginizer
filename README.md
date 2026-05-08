@@ -26,7 +26,7 @@ Auto-update is native: every commit to a source repo's default branch becomes a 
 Install globally:
 
 ```bash
-bun add -g @ccpluginizer/cli
+bun add -g @ccpluginizer/ccpluginizer
 ```
 
 Then run:
@@ -40,10 +40,8 @@ ccpluginizer validate <entry.json> # Validate an entry against the schema
 One-shot (no install):
 
 ```bash
-bunx --package=@ccpluginizer/cli ccpluginizer scan <owner/repo>
+bunx @ccpluginizer/ccpluginizer scan <owner/repo>
 ```
-
-Note: Using `--package=@ccpluginizer/cli` makes the bin resolution explicit and unambiguous. While `bunx @ccpluginizer/cli` may work when the package has exactly one bin, the explicit `--package=` form matches Bun's documented pattern for scoped CLI packages (e.g., `bunx --package @angular/cli ng`) and stays correct if more bins are added later.
 
 ## Disclaimer
 
