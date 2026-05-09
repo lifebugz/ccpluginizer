@@ -14,7 +14,7 @@
     "build": "bun --filter '*' run build",
     "ci:version": "changeset version",
     "prepublish:build": "bun run --filter '@ccpluginizer/*' build",
-    "ci:publish": "bun run prepublish:build && for dir in packages/*; do (cd \"$dir\" && bunx npm@latest publish --provenance) || exit 1; done && changeset tag"
+    "ci:publish": "bun run prepublish:build && for dir in packages/*; do (cd \"$dir\" && bunx npm@latest publish) || exit 1; done && changeset tag"
   },
   "dependencies": {
     "valibot": "^1.3.1"
