@@ -1,5 +1,11 @@
 # @ccpluginizer/ccpluginizer
 
+## 0.2.2
+
+### Patch Changes
+
+- [#9](https://github.com/lifebugz/ccpluginizer/pull/9) [`ec73132`](https://github.com/lifebugz/ccpluginizer/commit/ec73132379872ae175ba5dc01133d6f51d949c50) Thanks [@lifebugz](https://github.com/lifebugz)! - Remove the unused `@crustjs/store` dependency. It was never imported in `packages/cli/src/`, and its `peerDependencies.typescript: "^5"` (out of step with the rest of the `@crustjs/*` suite at `^6`) caused `bunx @ccpluginizer/ccpluginizer` to print a benign-but-noisy peer-dep warning. Dropping it silences the warning and slightly shrinks install size for end users.
+
 ## 0.2.1
 
 ### Patch Changes
