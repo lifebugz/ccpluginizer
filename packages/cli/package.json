@@ -34,11 +34,12 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "bun test",
-    "build": "bun build src/index.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm",
     "dev": "bun run src/index.ts",
     "prepublishOnly": "bun run build"
   },
   "engines": {
+    "node": ">=20",
     "bun": ">=1.0.0"
   },
   "publishConfig": {

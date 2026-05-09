@@ -8,4 +8,10 @@ while [ -L "$script" ]; do
     *)  script="$(dirname "$script")/$link" ;;
   esac
 done
-exec bun "$(cd "$(dirname "$script")" && pwd)/../dist/index.js" "$@"
+dist="$(cd "$(dirname "$script")" && pwd)/../dist/index.js"
+# Prefer bun when available (bunx users); fall back to node (npx/npm users).
+# The dist bundle is built with --target node so both runtimes work.
+if command -v bun >/dev/null 2>&1; then
+  exec bun "$dist" "$@"
+fi
+exec node "$dist" "$@"

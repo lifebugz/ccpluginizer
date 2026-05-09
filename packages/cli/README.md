@@ -6,15 +6,25 @@ Generate, validate, and submit [ccpluginizer marketplace](https://github.com/lif
 
 ## Install
 
+Works with either runtime — pick whichever you have.
+
+**With Bun:**
+
 ```bash
 bun add -g @ccpluginizer/ccpluginizer
-```
-
-Or run one-shot without installing:
-
-```bash
+# or one-shot:
 bunx @ccpluginizer/ccpluginizer scan <owner/repo>
 ```
+
+**With npm / Node:**
+
+```bash
+npm install -g @ccpluginizer/ccpluginizer
+# or one-shot:
+npx @ccpluginizer/ccpluginizer scan <owner/repo>
+```
+
+The CLI prefers Bun at runtime if available (faster startup) and falls back to Node otherwise. Either works; no configuration needed.
 
 ## Usage
 
