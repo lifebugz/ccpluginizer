@@ -14,6 +14,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      id-token: write  # required for npm trusted publishing (OIDC) and provenance
     steps:
       - uses: actions/checkout@v6
         with:
@@ -23,14 +24,13 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Verify NPM_TOKEN secret is provisioned
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NPM_TOKEN" ]; then
-            echo "::error::NPM_TOKEN repo secret is not set. Provision it before merging (see CONTRIBUTING.md)."
-            exit 1
-          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Use npm >= 11.5.1 (OIDC trusted publishing minimum)
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -51,8 +51,3 @@ jobs:
           publish: bun run ci:publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # NPM_TOKEN: changesets/action reads this and writes ~/.npmrc itself.
-          # NPM_CONFIG_TOKEN: bun publish reads this directly per Bun docs.
-          # Both ensure auth survives whichever code path actually does the publish.
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}

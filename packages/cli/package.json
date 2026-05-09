@@ -4,13 +4,31 @@
   "description": "CLI for pluginizing non-plugin Claude Code repos",
   "license": "MIT",
   "type": "module",
+  "homepage": "https://github.com/lifebugz/ccpluginizer#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lifebugz/ccpluginizer.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/lifebugz/ccpluginizer/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "plugin",
+    "marketplace",
+    "cli",
+    "ccpluginizer"
+  ],
   "bin": {
     "ccpluginizer": "./bin/ccpluginizer"
   },
   "main": "./dist/index.js",
   "files": [
     "bin",
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
