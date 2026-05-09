@@ -13,7 +13,7 @@
     "test": "bun test",
     "build": "bun --filter '*' run build",
     "ci:version": "changeset version",
-    "prepublish:build": "bun --filter '@ccpluginizer/*' run build",
+    "prepublish:build": "bun run --filter '@ccpluginizer/*' build",
     "ci:publish": "bun run prepublish:build && for dir in packages/*; do (cd \"$dir\" && bunx npm@latest publish --provenance) || exit 1; done && changeset tag"
   },
   "dependencies": {
