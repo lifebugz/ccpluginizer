@@ -68,9 +68,15 @@ Releases are automated. Do not run `bun publish` manually.
 2. Review the bumped versions and `CHANGELOG.md` entries.
 3. Merge the PR. The release workflow publishes to npm, pushes git tags, AND creates a GitHub Release for each tagged version (release notes auto-populated from `CHANGELOG.md`).
 
-### Pre-flight (before first release)
+### Pre-flight (when adding a new `@ccpluginizer/*` package)
 
-The `NPM_TOKEN` secret must exist in repo secrets before merging the scaffolding PR that adds Changesets. Generate an npm Automation token (granular access scoped to `@ccpluginizer/ccpluginizer` or the entire `@ccpluginizer` scope) and add it at Settings → Secrets and variables → Actions.
+Publishing uses [npm trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers) — no `NPM_TOKEN` lives in repo secrets. The workflow at `.github/workflows/release.yml` already requests `id-token: write`, so existing packages publish without further setup.
+
+For a brand-new package name, configure a Trusted Publisher on npm before the first publish:
+
+1. Reserve the name (an empty initial `npm publish` works, or use npm's pending-publisher flow).
+2. On npmjs.com → package → Settings → Publishing access → **Add trusted publisher**.
+3. Provider: GitHub Actions. Org: `lifebugz`. Repo: `ccpluginizer`. Workflow filename: `release.yml`.
 
 ### Yanking a release
 
