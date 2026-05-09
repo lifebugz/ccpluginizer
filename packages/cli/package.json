@@ -50,7 +50,6 @@
     "@crustjs/plugins": "^0.0.22",
     "@crustjs/progress": "^0.0.3",
     "@crustjs/prompts": "^0.0.13",
-    "@crustjs/store": "^0.0.4",
     "@crustjs/style": "^0.1.0",
     "valibot": "^1.3.1"
   },
