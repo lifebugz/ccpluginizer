@@ -1,16 +1,16 @@
-name: publish
+name: marketplace
 
 on:
   push:
     branches: [main]
 
 jobs:
-  publish:
+  marketplace:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest

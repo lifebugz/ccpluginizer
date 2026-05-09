@@ -11,12 +11,16 @@
     "typecheck": "bun --filter '*' run typecheck",
     "lint": "bun --filter '*' run lint",
     "test": "bun test",
-    "build": "bun --filter '*' run build"
+    "build": "bun --filter '*' run build",
+    "ci:version": "changeset version",
+    "ci:publish": "for dir in packages/*; do (cd \"$dir\" && bun publish) || exit 1; done && changeset tag"
   },
   "dependencies": {
     "valibot": "^1.3.1"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.0",
     "@tsconfig/bun": "^1.0.10",
     "@tsconfig/strictest": "^2.0.8",
     "@types/bun": "^1.3.13"

@@ -23,10 +23,24 @@ Auto-update is native: every commit to a source repo's default branch becomes a 
 
 ## CLI
 
+Install globally:
+
 ```bash
-bunx ccpluginizer scan <owner/repo>     # Generate a marketplace entry
-bunx ccpluginizer submit <owner/repo>   # Open a PR to add the repo to this catalog
-bunx ccpluginizer validate <entry.json> # Validate an entry against the schema
+bun add -g @ccpluginizer/ccpluginizer
+```
+
+Then run:
+
+```bash
+ccpluginizer scan <owner/repo>     # Generate a marketplace entry
+ccpluginizer submit <owner/repo>   # Open a PR to add the repo to this catalog
+ccpluginizer validate <entry.json> # Validate an entry against the schema
+```
+
+One-shot (no install):
+
+```bash
+bunx @ccpluginizer/ccpluginizer scan <owner/repo>
 ```
 
 ## Disclaimer
