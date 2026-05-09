@@ -1,2 +1,11 @@
 #!/usr/bin/env sh
-exec bun "$(dirname "$0")/../dist/index.js" "$@"
+# Resolve symlinks (POSIX-portable; macOS/BSD readlink lacks -f, so iterate).
+script="$0"
+while [ -L "$script" ]; do
+  link=$(readlink "$script")
+  case "$link" in
+    /*) script="$link" ;;
+    *)  script="$(dirname "$script")/$link" ;;
+  esac
+done
+exec bun "$(cd "$(dirname "$script")" && pwd)/../dist/index.js" "$@"
