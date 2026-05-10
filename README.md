@@ -2,7 +2,7 @@
 
 > Pluginize non-plugin Claude Code resources.
 
-ccpluginizer makes any non-plugin GitHub repo containing Claude Code-compatible content (skills, agents, commands, hooks, MCP servers) installable as a Claude Code plugin — without modifying the source repo and without redistributing source code.
+ccpluginizer makes any GitHub repo with Claude Code-compatible content (skills, agents, commands, hooks, MCP servers) installable as a Claude Code plugin. The source repo doesn't get modified, and no source code lives in our catalog.
 
 ## Install
 
@@ -13,13 +13,13 @@ claude /plugin install <plugin-name>@ccpluginizer
 
 ## Browse
 
-See [`entries/`](./entries) for the full catalog.
+The catalog lives in [`entries/`](./entries), one JSON file per pluginized repo.
 
 ## How it works
 
-Every entry in our `marketplace.json` uses Claude Code's `strict: false` mode to point at a source repo and declare which paths within it are skills, agents, etc. Claude Code clones the source directly into your plugin cache at install time. We never copy or redistribute source code.
+Every entry in `marketplace.json` uses Claude Code's `strict: false` mode. The entry points at a source repo and lists which paths inside it are skills, agents, and so on. When you install, Claude Code clones the source directly into your plugin cache. The catalog itself never holds the code.
 
-Auto-update is native: every commit to a source repo's default branch becomes a new plugin version automatically (we omit explicit `version` fields, so Claude Code falls through to git commit-SHA versioning).
+Auto-update happens for free. Entries omit `version` fields, so Claude Code falls back to git commit-SHA versioning. Every push to a source repo's default branch is a new plugin version on its own.
 
 ## CLI
 
@@ -38,7 +38,7 @@ ccpluginizer validate <entry.json> # Validate an entry against the schema
 
 To add a repo to this catalog, run `scan`, save the JSON to `entries/<name>.json`, and open a PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-One-shot (no install):
+One-shot, no install:
 
 ```bash
 bunx @ccpluginizer/ccpluginizer scan <owner/repo>
@@ -46,10 +46,10 @@ bunx @ccpluginizer/ccpluginizer scan <owner/repo>
 
 ## Disclaimer
 
-This is an independent, community-run catalog. ccpluginizer is **not affiliated with Anthropic, Claude, or any of the source repositories listed**. Source repositories retain their own licenses and authorship; ccpluginizer provides only metadata pointers.
+This is an independent, community-run catalog. We're not affiliated with Anthropic, Claude, or any of the listed source repositories. Source authors keep their own licenses and authorship. We provide metadata pointers, nothing else.
 
 ## License & Takedown
 
-ccpluginizer's metadata and tooling are MIT-licensed. See [LICENSE](./LICENSE).
+The metadata and tooling are MIT-licensed. See [LICENSE](./LICENSE).
 
-If you are an author of a listed source repository and want it removed, see [TAKEDOWN.md](./TAKEDOWN.md).
+If you author a listed source repository and want it removed, see [TAKEDOWN.md](./TAKEDOWN.md).
