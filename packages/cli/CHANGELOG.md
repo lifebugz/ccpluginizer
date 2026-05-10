@@ -1,5 +1,11 @@
 # @ccpluginizer/ccpluginizer
 
+## 0.4.0
+
+### Minor Changes
+
+- [#14](https://github.com/lifebugz/ccpluginizer/pull/14) [`5579700`](https://github.com/lifebugz/ccpluginizer/commit/5579700420d08eb01032a1dd55b35b9eab3e059c) Thanks [@lifebugz](https://github.com/lifebugz)! - Remove `submit` command. The CLI now focuses on generating and validating entry JSON; adding an entry to the catalog is done via a regular PR. See CONTRIBUTING.md for the workflow.
+
 ## 0.3.0
 
 ### Minor Changes
