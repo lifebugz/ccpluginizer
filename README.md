@@ -8,7 +8,7 @@ ccpluginizer makes any GitHub repo with Claude Code-compatible content (skills, 
 
 ```bash
 claude plugin marketplace add lifebugz/ccpluginizer
-claude plugin install <plugin-name>@ccpluginizer
+claude plugin install <plugin-name>@ccp-marketplace
 ```
 
 ## Browse

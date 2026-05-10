@@ -38,7 +38,7 @@ const entries = readdirSync(ENTRIES_DIR)
   .sort((a, b) => a.name.localeCompare(b.name));
 
 const marketplace: MarketplaceFile = {
-  name: "ccpluginizer",
+  name: "ccp-marketplace",
   description: "Marketplace of pluginized non-plugin Claude Code repos",
   owner: { name: "ccpluginizer" },
   plugins: entries,

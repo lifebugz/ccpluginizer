@@ -1,5 +1,5 @@
 {
-  "name": "ccpluginizer",
+  "name": "ccp-marketplace",
   "description": "Marketplace of pluginized non-plugin Claude Code repos",
   "owner": {
     "name": "ccpluginizer"
@@ -41,7 +41,9 @@
       },
       "strict": false,
       "description": "Agent Skills for Open Circle projects including Valibot and Formisch",
-      "author": "Open Circle",
+      "author": {
+        "name": "Open Circle"
+      },
       "homepage": "https://opencircle.dev",
       "repository": "https://github.com/open-circle/agent-skills",
       "skills": [
