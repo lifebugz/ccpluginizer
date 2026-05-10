@@ -2,13 +2,13 @@
 
 > CLI for pluginizing non-plugin Claude Code repos.
 
-Generate and validate [ccpluginizer marketplace](https://github.com/lifebugz/ccpluginizer) entries from any GitHub repo containing Claude Code-compatible content (skills, agents, commands, hooks, MCP servers).
+Generate and validate [ccpluginizer marketplace](https://github.com/lifebugz/ccpluginizer) entries from any GitHub repo with Claude Code-compatible content (skills, agents, commands, hooks, MCP servers).
 
 ## Install
 
-Works with either runtime — pick whichever you have.
+Works with either runtime. Pick whichever you have.
 
-**With Bun:**
+With Bun:
 
 ```bash
 bun add -g @ccpluginizer/ccpluginizer
@@ -16,7 +16,7 @@ bun add -g @ccpluginizer/ccpluginizer
 bunx @ccpluginizer/ccpluginizer scan <owner/repo>
 ```
 
-**With npm / Node:**
+With npm or Node:
 
 ```bash
 npm install -g @ccpluginizer/ccpluginizer
@@ -24,7 +24,7 @@ npm install -g @ccpluginizer/ccpluginizer
 npx @ccpluginizer/ccpluginizer scan <owner/repo>
 ```
 
-The CLI prefers Bun at runtime if available (faster startup) and falls back to Node otherwise. Either works; no configuration needed.
+At runtime the CLI prefers Bun when it's around (it starts faster), and falls back to Node otherwise. You don't need to configure anything.
 
 ## Usage
 
@@ -39,13 +39,9 @@ To add a repo to the catalog, run `scan`, commit the JSON to `entries/<name>.jso
 
 ## How it works
 
-ccpluginizer detects skills, agents, commands, hooks, and MCP servers in the source repo, then synthesizes a marketplace entry that uses Claude Code's `strict: false` mode to point at the source. Source code is never copied or redistributed.
+ccpluginizer detects skills, agents, commands, hooks, and MCP servers in the source repo, then synthesizes a marketplace entry that uses Claude Code's `strict: false` mode to point at the source. The catalog never holds a copy of the source itself.
 
-Three detection layers:
-
-1. **Convention paths** — `.claude/skills/`, `.claude/agents/`, `.claude/commands/`, etc.
-2. **Manifest metadata** — `.claude-plugin/manifest.json` or `.ccpluginizer.json` marker file.
-3. **Heuristic fallback** — looks for `SKILL.md` files with YAML frontmatter, `commands/*.md`, etc.
+Detection runs in three passes. The first looks at convention paths like `.claude/skills/`, `.claude/agents/`, and `.claude/commands/`. The second reads `.claude-plugin/manifest.json` or a `.ccpluginizer.json` marker file if the repo has one. The third is a heuristic fallback for repos that follow neither convention. It scans for `SKILL.md` files with YAML frontmatter, `commands/*.md`, and similar patterns.
 
 ## Repository
 

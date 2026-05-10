@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for considering an addition to ccpluginizer's catalog.
+Thanks for adding to ccpluginizer's catalog. The flow below covers the common case of adding a new entry.
 
 ## Add an entry
 
@@ -64,7 +64,7 @@ Examples:
 - "Fix crash when entry path doesn't exist" → `patch`
 - "Remove deprecated `--legacy` flag from `scan`" → `minor` (would be `major` after 1.0)
 
-When in doubt, pick `minor` — pre-1.0, every release is implicitly "may break things."
+When in doubt, pick `minor`. Pre-1.0, every release implicitly says "may break things."
 
 ## Releasing (maintainers only)
 
@@ -76,7 +76,7 @@ Releases are automated. Do not run `bun publish` manually.
 
 ### Pre-flight (when adding a new `@ccpluginizer/*` package)
 
-Publishing uses [npm trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers) — no `NPM_TOKEN` lives in repo secrets. The workflow at `.github/workflows/release.yml` already requests `id-token: write`, so existing packages publish without further setup.
+Publishing uses [npm trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers), so no `NPM_TOKEN` lives in repo secrets. The workflow at `.github/workflows/release.yml` already requests `id-token: write`, so existing packages publish without further setup.
 
 For a brand-new package name, configure a Trusted Publisher on npm before the first publish:
 
