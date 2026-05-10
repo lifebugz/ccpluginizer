@@ -2,7 +2,7 @@
 
 If you are the author of a source repository listed in ccpluginizer's catalog and want it removed, you have two options:
 
-1. **Open an issue** at `github.com/ccpluginizer/marketplace/issues` titled "Takedown: <owner>/<repo>" and identify yourself.
+1. **Open an issue** at `github.com/lifebugz/ccpluginizer/issues` titled "Takedown: <owner>/<repo>" and identify yourself.
 2. **Open a PR** that moves the corresponding `entries/<name>.json` file to `tombstones/<name>.json` with a brief reason.
 
 We will action takedown requests within 7 days. The tombstoned entry will be excluded from `marketplace.json` on the next build, so users will lose access on their next `/plugin marketplace update`.

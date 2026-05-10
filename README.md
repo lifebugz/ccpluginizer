@@ -33,9 +33,10 @@ Then run:
 
 ```bash
 ccpluginizer scan <owner/repo>     # Generate a marketplace entry
-ccpluginizer submit <owner/repo>   # Open a PR to add the repo to this catalog
 ccpluginizer validate <entry.json> # Validate an entry against the schema
 ```
+
+To add a repo to this catalog, run `scan`, save the JSON to `entries/<name>.json`, and open a PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 One-shot (no install):
 
