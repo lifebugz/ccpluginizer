@@ -6,3 +6,4 @@ bun.lockb-*
 coverage/
 .env
 .env.local
+.claude
