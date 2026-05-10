@@ -1,15 +1,18 @@
 {
   "name": "jarrodwatts-claude-code-config",
   "source": {
-    "source": "github",
-    "repo": "jarrodwatts/claude-code-config"
+    "source": "url",
+    "url": "https://github.com/jarrodwatts/claude-code-config.git"
   },
   "strict": false,
   "skills": [
     "./skills/"
   ],
   "agents": [
-    "./agents/"
+    "./agents/tech-docs-writer.md",
+    "./agents/codebase-search.md",
+    "./agents/media-interpreter.md",
+    "./agents/open-source-librarian.md"
   ],
   "commands": [
     "./commands/"

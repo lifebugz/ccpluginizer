@@ -1,8 +1,8 @@
 {
   "name": "elysiajs-skills",
   "source": {
-    "source": "github",
-    "repo": "elysiajs/skills"
+    "source": "url",
+    "url": "https://github.com/elysiajs/skills.git"
   },
   "strict": false,
   "skills": [

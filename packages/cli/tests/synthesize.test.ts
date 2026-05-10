@@ -15,7 +15,7 @@ describe("synthesize: Layer 1 marker file wins", () => {
     expect(entry.name).toBe("elysia-marker");
     expect(entry.skills).toEqual(["./elysia/"]);
     expect(entry.strict).toBe(false);
-    expect(entry.source).toEqual({ source: "github", repo: "test/marker-file" });
+    expect(entry.source).toEqual({ source: "url", url: "https://github.com/test/marker-file.git" });
   });
 
   test("emits all 8 component kinds when marker file declares them", () => {
@@ -75,7 +75,7 @@ describe("synthesize: Layer 2 alone (no marker, no manifest)", () => {
       sourceRepo: "test/dotfiles-like",
     });
     expect(entry.skills).toEqual(["./.claude/skills/"]);
-    expect(entry.agents).toEqual(["./.claude/agents/"]);
+    expect(entry.agents).toEqual(["./.claude/agents/reviewer.md"]);
   });
 });
 
@@ -89,7 +89,7 @@ describe("synthesize: Layer 2 + 2.5 merge", () => {
     expect(entry.description).toBe("Agent Skills for Open Circle projects including Valibot and Formisch");
     expect(entry.homepage).toBe("https://opencircle.dev");
     expect(entry.repository).toBe("https://github.com/open-circle/agent-skills");
-    expect(entry.author).toBe("Open Circle");
+    expect(entry.author).toEqual({ name: "Open Circle" });
   });
 });
 
