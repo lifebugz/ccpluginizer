@@ -89,7 +89,9 @@ function mergeManifestMetadata(
     ...(manifest.homepage !== undefined ? { homepage: manifest.homepage } : {}),
     ...(manifest.repository !== undefined ? { repository: manifest.repository } : {}),
     ...(manifest.license !== undefined ? { license: manifest.license } : {}),
-    ...(manifest.author !== undefined ? { author: manifest.author } : {}),
+    ...(manifest.author !== undefined
+      ? { author: typeof manifest.author === "string" ? { name: manifest.author } : manifest.author }
+      : {}),
   };
 }
 
@@ -175,7 +177,7 @@ function groupByKind(findings: readonly Finding[]): Map<ComponentKind, Finding[]
 }
 
 function makeGithubSource(repo: string): Source {
-  return { source: "github", repo };
+  return { source: "url", url: `https://github.com/${repo}.git` };
 }
 
 function defaultEntryName(sourceRepo: string): string {

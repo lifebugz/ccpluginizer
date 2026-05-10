@@ -8,8 +8,8 @@
     {
       "name": "elysiajs-skills",
       "source": {
-        "source": "github",
-        "repo": "elysiajs/skills"
+        "source": "url",
+        "url": "https://github.com/elysiajs/skills.git"
       },
       "strict": false,
       "skills": [
@@ -19,15 +19,18 @@
     {
       "name": "jarrodwatts-claude-code-config",
       "source": {
-        "source": "github",
-        "repo": "jarrodwatts/claude-code-config"
+        "source": "url",
+        "url": "https://github.com/jarrodwatts/claude-code-config.git"
       },
       "strict": false,
       "skills": [
         "./skills/"
       ],
       "agents": [
-        "./agents/"
+        "./agents/tech-docs-writer.md",
+        "./agents/codebase-search.md",
+        "./agents/media-interpreter.md",
+        "./agents/open-source-librarian.md"
       ],
       "commands": [
         "./commands/"
@@ -36,8 +39,8 @@
     {
       "name": "open-circle-agent-skills",
       "source": {
-        "source": "github",
-        "repo": "open-circle/agent-skills"
+        "source": "url",
+        "url": "https://github.com/open-circle/agent-skills.git"
       },
       "strict": false,
       "description": "Agent Skills for Open Circle projects including Valibot and Formisch",

@@ -55,10 +55,10 @@ describe("Layer 2: dual-root search", () => {
     expect(skills?.confidence).toBe("high");
   });
 
-  test("detects agents/ inside .claude/", () => {
+  test("detects agents/ inside .claude/ and enumerates .md files", () => {
     const findings = detectConventions(join(FIXTURES, "dotfiles-like"));
     const agents = findings.find((f) => f.kind === "agents");
-    expect(agents?.paths).toEqual(["./.claude/agents/"]);
+    expect(agents?.paths).toEqual(["./.claude/agents/reviewer.md"]);
   });
 
   test("merges multi-root findings into a single multi-path entry", () => {
