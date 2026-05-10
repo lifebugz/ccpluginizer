@@ -12,5 +12,5 @@
   "description": "Agent Skills for Open Circle projects including Valibot and Formisch",
   "homepage": "https://opencircle.dev",
   "repository": "https://github.com/open-circle/agent-skills",
-  "author": "Open Circle"
+  "author": { "name": "Open Circle" }
 }
