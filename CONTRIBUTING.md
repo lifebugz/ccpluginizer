@@ -2,18 +2,24 @@
 
 Thank you for considering an addition to ccpluginizer's catalog.
 
-## Submit an entry
+## Add an entry
 
-```bash
-# After installing globally (bun add -g @ccpluginizer/ccpluginizer):
-ccpluginizer scan <owner/repo>
-# Or one-shot without installing:
-bunx @ccpluginizer/ccpluginizer scan <owner/repo>
-# Review the output, save to entries/<name>.json
-bun scripts/build-marketplace.ts  # Verify it merges cleanly
-```
+1. Generate the entry JSON for the source repo:
 
-Then open a PR adding `entries/<name>.json`. The validation CI will run automatically.
+   ```bash
+   # After installing globally (bun add -g @ccpluginizer/ccpluginizer):
+   ccpluginizer scan <owner/repo>
+   # Or one-shot without installing:
+   bunx @ccpluginizer/ccpluginizer scan <owner/repo>
+   ```
+
+2. Fork this repo, save the output to `entries/<name>.json`, and verify it merges cleanly:
+
+   ```bash
+   bun scripts/build-marketplace.ts
+   ```
+
+3. Open a PR adding `entries/<name>.json`. The validation CI will run automatically.
 
 ## Quality bar (v0.1)
 
@@ -56,7 +62,7 @@ Changesets prompts you to pick `patch` / `minor` / `major`, but pre-1.0 semver f
 Examples:
 - "Add `--json` flag to `scan`" → `minor`
 - "Fix crash when entry path doesn't exist" → `patch`
-- "Rename `submit` command to `publish`" → `minor` (would be `major` after 1.0)
+- "Remove deprecated `--legacy` flag from `scan`" → `minor` (would be `major` after 1.0)
 
 When in doubt, pick `minor` — pre-1.0, every release is implicitly "may break things."
 

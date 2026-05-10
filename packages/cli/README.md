@@ -2,7 +2,7 @@
 
 > CLI for pluginizing non-plugin Claude Code repos.
 
-Generate, validate, and submit [ccpluginizer marketplace](https://github.com/lifebugz/ccpluginizer) entries from any GitHub repo containing Claude Code-compatible content (skills, agents, commands, hooks, MCP servers).
+Generate and validate [ccpluginizer marketplace](https://github.com/lifebugz/ccpluginizer) entries from any GitHub repo containing Claude Code-compatible content (skills, agents, commands, hooks, MCP servers).
 
 ## Install
 
@@ -30,9 +30,10 @@ The CLI prefers Bun at runtime if available (faster startup) and falls back to N
 
 ```bash
 ccpluginizer scan <owner/repo>     # Generate a marketplace entry
-ccpluginizer submit <owner/repo>   # Open a PR to add the repo to the catalog
 ccpluginizer validate <entry.json> # Validate an entry against the schema
 ```
+
+To add a repo to the catalog, run `scan`, commit the JSON to `entries/<name>.json` in the catalog repo, and open a PR. See the catalog's [CONTRIBUTING.md](https://github.com/lifebugz/ccpluginizer/blob/main/CONTRIBUTING.md).
 
 `<owner/repo>` accepts either GitHub shorthand (`elysiajs/skills`) or a full URL (`https://github.com/elysiajs/skills`).
 
