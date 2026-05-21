@@ -1,5 +1,11 @@
 # @ccpluginizer/ccpluginizer
 
+## 0.5.1
+
+### Patch Changes
+
+- [#23](https://github.com/lifebugz/ccpluginizer/pull/23) [`29e7698`](https://github.com/lifebugz/ccpluginizer/commit/29e7698b9961a7c39eff61ae8ebce864ebfd18fe) Thanks [@lifebugz](https://github.com/lifebugz)! - Verify the new GitHub App release flow end-to-end: this changeset should drive a v0.5.1 bump and the resulting "Version Packages" PR should be authored by `ccpluginizer-release-bot[bot]` with `validate` + `changeset-check` triggering on it automatically.
+
 ## 0.5.0
 
 ### Minor Changes
