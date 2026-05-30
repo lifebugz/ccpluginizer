@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import * as v from "valibot";
 import { SkillFrontmatterSchema, AgentFrontmatterSchema } from "../schemas/frontmatter.ts";
+import { extractFrontmatter } from "./yaml.ts";
 import type { Finding } from "./types.ts";
 
 export function detectContentSniff(repoRoot: string): readonly Finding[] {
@@ -61,42 +62,5 @@ function walk(repoRoot: string, dir: string, visit: (filePath: string) => void):
 }
 
 function parseFrontmatter(filePath: string): Record<string, unknown> | null {
-  const content = readFileSync(filePath, "utf8");
-  const match = /^---\n([\s\S]*?)\n---/.exec(content);
-  if (match === null) {
-    return null;
-  }
-  const yamlBody = match[1];
-  if (yamlBody === undefined) {
-    return null;
-  }
-  return parseYamlBlock(yamlBody);
-}
-
-function parseYamlBlock(body: string): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const line of body.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) {
-      continue;
-    }
-    const colonIdx = trimmed.indexOf(":");
-    if (colonIdx === -1) {
-      continue;
-    }
-    const key = trimmed.slice(0, colonIdx).trim();
-    const rawValue = trimmed.slice(colonIdx + 1).trim();
-    out[key] = coerceYamlValue(rawValue);
-  }
-  return out;
-}
-
-function coerceYamlValue(raw: string): unknown {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  if (raw === "null" || raw === "~") return null;
-  if (/^-?\d+$/.test(raw)) return Number(raw);
-  if (raw.startsWith('"') && raw.endsWith('"')) return raw.slice(1, -1);
-  if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1);
-  return raw;
+  return extractFrontmatter(readFileSync(filePath, "utf8"));
 }

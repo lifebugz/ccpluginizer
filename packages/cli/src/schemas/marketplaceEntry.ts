@@ -26,10 +26,16 @@ const GitSubdirSourceSchema = v.strictObject({
 
 export const SourceSchema = v.union([GithubSourceSchema, UrlSourceSchema, GitSubdirSourceSchema]);
 
+const DependencySchema = v.union([
+  v.string(),
+  v.object({ name: v.string(), version: v.optional(v.string()) }),
+]);
+
 export const MarketplaceEntrySchema = v.object({
   name: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]*$/)),
   source: SourceSchema,
   strict: v.optional(v.boolean()),
+  dependencies: v.optional(v.array(DependencySchema)),
   description: v.optional(v.string()),
   version: v.optional(v.string()),
   author: v.optional(v.union([v.string(), v.object({ name: v.string() })])),
