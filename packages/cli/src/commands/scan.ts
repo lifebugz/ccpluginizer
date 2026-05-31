@@ -143,13 +143,17 @@ async function reviewSplit(
   if (proceed) {
     return result;
   }
-  console.error("ccpluginizer: split declined; emitting a single entry.");
-  return synthesizeEntries({
+  // Re-synthesize as a single entry BEFORE announcing it: an already-marketplace
+  // repo intentionally aborts here (checkMarketplaceGuard), so we must not promise
+  // a single entry we then fail to emit.
+  const single = await synthesizeEntries({
     repoRoot: ctx.repoPath,
     sourceRepo: ctx.sourceRepo,
     split: false,
     minSkillsToSplit: ctx.minSkills,
   });
+  console.error("ccpluginizer: split declined; emitting a single entry.");
+  return single;
 }
 
 interface OutputFlags {

@@ -30,8 +30,12 @@ export function enumerateSkills(containerDir: string): SkillMeta[] {
   const out: SkillMeta[] = [];
   for (const dir of readdirSync(containerDir).sort()) {
     const skillPath = join(containerDir, dir);
-    if (!statSync(skillPath).isDirectory()) {
-      continue;
+    try {
+      if (!statSync(skillPath).isDirectory()) {
+        continue; // not a directory — skip
+      }
+    } catch {
+      continue; // broken symlink / vanished between readdir and stat — skip, don't crash
     }
     const skillMd = join(skillPath, "SKILL.md");
     let raw: string;

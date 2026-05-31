@@ -104,7 +104,7 @@ export async function synthesizeEntries(
             entries,
             split: { strategy: result.strategy, groupCount: result.groups.length },
             marker: markerDraft,
-            warnings: collectSplitWarnings(input.repoRoot, layout, input.sourceRepo, markerDraft.core),
+            warnings: collectSplitWarnings(input.repoRoot, layout, input.sourceRepo, markerDraft.core, markerDraft.umbrella),
           };
         }
       }
@@ -122,13 +122,20 @@ function collectSplitWarnings(
   layout: SourceLayout,
   sourceRepo: string,
   coreEmitted: boolean,
+  umbrellaEmitted: boolean,
 ): string[] {
   const warnings: string[] = [];
 
-  if (coreEmitted && layout.mcp?.serverType === "repo-local") {
-    warnings.push(
-      `The MCP server in "${layout.mcp.relPath}" references repo-local files; inlined into core it may not resolve at install time. Review its command/args paths, or keep the MCP via --umbrella.`,
-    );
+  if (layout.mcp !== null) {
+    if (coreEmitted && layout.mcp.serverType === "repo-local") {
+      warnings.push(
+        `The MCP server in "${layout.mcp.relPath}" references repo-local files; inlined into core it may not resolve at install time. Review its command/args paths, or keep the MCP via --umbrella.`,
+      );
+    } else if (!coreEmitted && !umbrellaEmitted) {
+      warnings.push(
+        `The MCP server in "${layout.mcp.relPath}" is not carried by any emitted entry (core is disabled and no umbrella was emitted); it will be dropped. Use --umbrella, or a marker with "core": true, to retain it.`,
+      );
+    }
   }
 
   const pluginBase = layout.pluginRoot !== null ? join(repoRoot, layout.pluginRoot.relPath) : repoRoot;

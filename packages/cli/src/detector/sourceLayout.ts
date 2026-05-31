@@ -47,6 +47,14 @@ export function resolveSourceLayout(repoRoot: string): SourceLayout {
   };
 }
 
+// Non-source directories that must never win container resolution: a repo's
+// own example/fixture skills (e.g. tests/fixtures/**) or build output could
+// otherwise out-count the real skills/ dir and root the split at the wrong place.
+const SKIP_DIRS = new Set([
+  ".git", "node_modules", "tests", "test", "__tests__", "__mocks__",
+  "dist", "build", "out", "coverage", ".next", ".cache", ".turbo", ".github", "vendor",
+]);
+
 function collectDirs(dir: string, acc: string[]): void {
   acc.push(dir);
   let entries: string[];
@@ -56,7 +64,7 @@ function collectDirs(dir: string, acc: string[]): void {
     return;
   }
   for (const entry of entries) {
-    if (entry === ".git" || entry === "node_modules") {
+    if (SKIP_DIRS.has(entry)) {
       continue;
     }
     const full = join(dir, entry);
@@ -270,9 +278,7 @@ function classifyOne(server: unknown): McpServerType {
   if (refsLocal(cmd) || args.some(refsLocal)) {
     return "repo-local";
   }
-  const base = cmd.split("/").pop() ?? cmd;
-  if (["npx", "uvx", "bunx", "pnpx", "dlx", "pipx"].includes(base)) {
-    return "package";
-  }
+  // A stdio command that does not reference repo-local paths is treated as a
+  // self-contained package runner (npx/uvx/bunx/…) or an installed binary.
   return "package";
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { enumerateSkills } from "../src/detector/skillMeta.ts";
 
@@ -14,6 +14,19 @@ describe("enumerateSkills", () => {
     expect(dirs).toContain("push-notification-tester");
     expect(dirs).not.toContain("not-a-skill");
     expect(skills.length).toBe(5);
+  });
+
+  test("skips a broken symlink instead of crashing the scan", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-brokenlink-"));
+    try {
+      mkdirSync(join(tmp, "real"), { recursive: true });
+      writeFileSync(join(tmp, "real", "SKILL.md"), "---\ndescription: real\n---\n");
+      symlinkSync(join(tmp, "does-not-exist"), join(tmp, "brokenlink"));
+      const skills = enumerateSkills(tmp);
+      expect(skills.map((s) => s.dir)).toEqual(["real"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("returns results sorted by dir for determinism", () => {

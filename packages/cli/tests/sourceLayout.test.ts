@@ -70,4 +70,22 @@ describe("resolveSourceLayout: filesystem robustness", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test("a denser tests/fixtures skills dir does not out-rank the real skills/", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-skipdirs-"));
+    try {
+      // Real container: 1 skill.
+      mkdirSync(join(tmp, "skills", "real"), { recursive: true });
+      writeFileSync(join(tmp, "skills", "real", "SKILL.md"), "---\ndescription: real\n---\n");
+      // Fixture container: 3 skills — would win on count if not excluded.
+      for (const n of ["a", "b", "c"]) {
+        mkdirSync(join(tmp, "tests", "fixtures", n), { recursive: true });
+        writeFileSync(join(tmp, "tests", "fixtures", n, "SKILL.md"), "---\ndescription: fixture\n---\n");
+      }
+      const layout = resolveSourceLayout(tmp);
+      expect(layout.skillsContainer?.relPath).toBe("skills");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });

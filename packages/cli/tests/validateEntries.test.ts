@@ -21,6 +21,16 @@ describe("collectEntries: friendly errors", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test("throws for a directory with no entry JSON files (no silent empty pass)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-emptydir-"));
+    try {
+      writeFileSync(join(tmp, "README.md"), "not an entry");
+      expect(() => collectEntries(tmp)).toThrow(/No entry JSON files/i);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 const valid = (name: string): unknown => ({

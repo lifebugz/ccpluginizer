@@ -46,10 +46,15 @@ export function collectEntries(path: string): unknown[] {
     throw new Error(`No such file or directory: ${path}`);
   }
   if (statSync(path).isDirectory()) {
-    return readdirSync(path)
+    const files = readdirSync(path)
       .filter((f) => f.endsWith(".json"))
-      .sort()
-      .map((f) => parseJsonFile(join(path, f)));
+      .sort();
+    // A directory with no entry files is almost always a wrong-path mistake;
+    // returning [] would make `validate <dir>` falsely report "OK (0 entries)".
+    if (files.length === 0) {
+      throw new Error(`No entry JSON files (*.json) found in directory: ${path}`);
+    }
+    return files.map((f) => parseJsonFile(join(path, f)));
   }
   const parsed = parseJsonFile(path);
   return Array.isArray(parsed) ? parsed : [parsed];
