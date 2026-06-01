@@ -5,6 +5,14 @@ import * as v from "valibot";
 // silently dropped during detection.
 const Stringy = v.pipe(v.union([v.string(), v.number(), v.boolean()]), v.transform(String));
 
+// Lenient string list: accept a YAML block/flow list OR a single bare scalar
+// (`tags: voice`) and normalize to an array, so a non-list value never drops the
+// whole skill during detection (mirrors the Stringy leniency for scalars).
+const StringyList = v.pipe(
+  v.union([v.array(Stringy), Stringy]),
+  v.transform((value) => (Array.isArray(value) ? value : [value])),
+);
+
 export const SkillFrontmatterSchema = v.object({
   name: v.optional(Stringy),
   description: Stringy,
@@ -19,7 +27,7 @@ export const SkillFrontmatterSchema = v.object({
       category: v.optional(Stringy),
     }),
   ),
-  tags: v.optional(v.array(Stringy)),
+  tags: v.optional(StringyList),
   category: v.optional(Stringy),
 });
 
@@ -34,7 +42,10 @@ export const AgentFrontmatterSchema = v.object({
   model: v.optional(v.string()),
   effort: v.optional(v.string()),
   maxTurns: v.optional(v.number()),
-  tools: v.optional(v.array(v.string())),
+  // Claude Code's documented agent format is a comma-separated string
+  // (`tools: Read, Grep, Bash`), not only a YAML list — accept either, so a real
+  // agent with a string `tools` value is not rejected and dropped from the core entry.
+  tools: v.optional(v.union([v.string(), v.array(v.string())])),
   disallowedTools: v.optional(v.union([v.string(), v.array(v.string())])),
 });
 

@@ -192,7 +192,11 @@ function collectNested(
   return { value: map, next: i };
 }
 
-function coerceYamlValue(raw: string): unknown {
+function coerceYamlValue(rawWithComment: string): unknown {
+  // Strip a YAML inline comment first (e.g. `product: voice  # note` → `voice`), so a
+  // trailing comment doesn't leak into a cluster key or description. Quoted/`#`-less
+  // values are unaffected. Block scalars never reach here, so their literal `#` stays.
+  const raw = stripInlineComment(rawWithComment);
   if (raw === "true") return true;
   if (raw === "false") return false;
   if (raw === "null" || raw === "~") return null;
@@ -210,6 +214,28 @@ function coerceYamlValue(raw: string): unknown {
     const inner = raw.slice(1, -1).trim();
     if (inner === "") return [];
     return splitFlowList(inner).map((s) => coerceYamlValue(s.trim()));
+  }
+  return raw;
+}
+
+/**
+ * Strip a YAML inline comment: a `#` that begins the value or is preceded by
+ * whitespace and is not inside single/double quotes. `url: x#y` (no space) and
+ * `"a # b"` (quoted) are preserved; `voice # note` and `# whole-line` are not.
+ */
+function stripInlineComment(raw: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        quote = null;
+      }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "#" && (i === 0 || raw[i - 1] === " " || raw[i - 1] === "\t")) {
+      return raw.slice(0, i).trimEnd();
+    }
   }
   return raw;
 }

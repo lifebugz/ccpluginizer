@@ -168,6 +168,14 @@ describe("SkillFrontmatterSchema", () => {
       expect(result.output.metadata?.product).toBe("voice");
     }
   });
+
+  test("accepts a bare-string tags value, coerced to a single-element array (no skill drop)", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, { description: "x", tags: "voice" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.tags).toEqual(["voice"]);
+    }
+  });
 });
 
 describe("AgentFrontmatterSchema", () => {
@@ -184,6 +192,15 @@ describe("AgentFrontmatterSchema", () => {
       description: "Reviews code",
     });
     expect(result.success).toBe(false);
+  });
+
+  test("accepts a comma-separated string tools value (Claude Code's documented format)", () => {
+    const result = v.safeParse(AgentFrontmatterSchema, {
+      name: "code-reviewer",
+      description: "Reviews code",
+      tools: "Read, Grep, Bash",
+    });
+    expect(result.success).toBe(true);
   });
 });
 
