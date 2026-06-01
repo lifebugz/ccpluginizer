@@ -31,6 +31,23 @@ describe("collectEntries: friendly errors", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test("flattens an array-shaped JSON file inside a directory (entry-by-entry, like the single-file path)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-arrdir-"));
+    try {
+      const entries = [
+        { name: "a", source: { source: "github", repo: "x/y" } },
+        { name: "b", source: { source: "github", repo: "x/y" } },
+      ];
+      writeFileSync(join(tmp, "entries.json"), JSON.stringify(entries));
+      const collected = collectEntries(tmp);
+      expect(collected).toHaveLength(2);
+      // The validator must see two real entries, not one (non-conforming) array element.
+      expect(validateEntries(collected).ok).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 const valid = (name: string): unknown => ({

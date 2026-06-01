@@ -54,9 +54,16 @@ export function collectEntries(path: string): unknown[] {
     if (files.length === 0) {
       throw new Error(`No entry JSON files (*.json) found in directory: ${path}`);
     }
-    return files.map((f) => parseJsonFile(join(path, f)));
+    // Flatten array-shaped files the same way the single-file branch does, so a
+    // multi-entry array dropped into the directory validates entry-by-entry rather
+    // than being mis-parsed as one (non-conforming) array element.
+    return files.flatMap((f) => toEntryList(parseJsonFile(join(path, f))));
   }
-  const parsed = parseJsonFile(path);
+  return toEntryList(parseJsonFile(path));
+}
+
+/** A parsed JSON file is either a single entry or an array of entries. */
+function toEntryList(parsed: unknown): unknown[] {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 

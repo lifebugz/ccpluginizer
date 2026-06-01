@@ -138,23 +138,37 @@ function collectSplitWarnings(
     }
   }
 
-  const pluginBase = layout.pluginRoot !== null ? join(repoRoot, layout.pluginRoot.relPath) : repoRoot;
-  const dropped: string[] = [];
-  if (layout.hooks !== null) {
-    dropped.push("hooks");
-  }
-  for (const dir of ["commands", "output-styles", "themes"]) {
-    if (existsSync(join(pluginBase, dir))) {
-      dropped.push(dir);
-    }
-  }
-  if (existsSync(join(pluginBase, "monitors", "monitors.json")) || existsSync(join(pluginBase, "monitors.json"))) {
-    dropped.push("monitors");
-  }
-  if (dropped.length > 0) {
+  // Agents ride along in the core entry; if core is disabled and there is no
+  // umbrella to carry them, they are dropped — warn, mirroring the MCP-drop case.
+  if (layout.agentsContainer !== null && !coreEmitted && !umbrellaEmitted) {
     warnings.push(
-      `Split entries do not carry these non-skill artifacts: ${dropped.join(", ")}. Use --umbrella to retain them, or --no-split for a single entry.`,
+      `The agents in "${layout.agentsContainer.relPath}" are not carried by any emitted entry (core is disabled and no umbrella was emitted); they will be dropped. Use --umbrella, or a marker with "core": true, to retain them.`,
     );
+  }
+
+  // The umbrella entry is a git-subdir at the plugin root, so it carries every
+  // non-skill artifact beneath it — only warn about dropped artifacts when no
+  // umbrella was emitted (otherwise the "Use --umbrella to retain them" advice is
+  // self-contradictory, since the user already did).
+  if (!umbrellaEmitted) {
+    const pluginBase = layout.pluginRoot !== null ? join(repoRoot, layout.pluginRoot.relPath) : repoRoot;
+    const dropped: string[] = [];
+    if (layout.hooks !== null) {
+      dropped.push("hooks");
+    }
+    for (const dir of ["commands", "output-styles", "themes"]) {
+      if (existsSync(join(pluginBase, dir))) {
+        dropped.push(dir);
+      }
+    }
+    if (existsSync(join(pluginBase, "monitors", "monitors.json")) || existsSync(join(pluginBase, "monitors.json"))) {
+      dropped.push("monitors");
+    }
+    if (dropped.length > 0) {
+      warnings.push(
+        `Split entries do not carry these non-skill artifacts: ${dropped.join(", ")}. Use --umbrella to retain them, or --no-split for a single entry.`,
+      );
+    }
   }
 
   if (sourceRepo.startsWith("local/")) {

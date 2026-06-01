@@ -186,21 +186,23 @@ function resolveMcp(
     .filter((f) => existsSync(f))
     .map((f) => ({ file: f, relPath: toRel(repoRoot, f) }))
     .sort((a, b) => preferUnder(pluginRoot, a.relPath, b.relPath));
-  const chosen = files[0];
-  if (chosen === undefined) {
-    return null;
+  // Walk candidates in priority order: a malformed or non-MCP highest-priority
+  // .mcp.json must not shadow a valid one elsewhere (returning null would silently
+  // drop the real MCP server from the emitted core).
+  for (const chosen of files) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(chosen.file, "utf8"));
+    } catch {
+      continue;
+    }
+    const servers = extractServers(parsed);
+    if (servers === null) {
+      continue;
+    }
+    return { servers, serverType: classifyServers(servers), relPath: chosen.relPath };
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(chosen.file, "utf8"));
-  } catch {
-    return null;
-  }
-  const servers = extractServers(parsed);
-  if (servers === null) {
-    return null;
-  }
-  return { servers, serverType: classifyServers(servers), relPath: chosen.relPath };
+  return null;
 }
 
 function resolveHooks(
@@ -232,15 +234,29 @@ function preferUnder(pluginRoot: { relPath: string } | null, a: string, b: strin
 }
 
 function extractServers(parsed: unknown): Record<string, unknown> | null {
-  if (parsed === null || typeof parsed !== "object") {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     return null;
   }
   const obj = parsed as Record<string, unknown>;
-  const servers = obj["mcpServers"] ?? obj;
-  if (typeof servers !== "object") {
+  const hasWrapper = obj["mcpServers"] !== undefined && obj["mcpServers"] !== null;
+  const raw = hasWrapper ? obj["mcpServers"] : obj;
+  // Reject a non-object or array servers map (e.g. `{ "mcpServers": [...] }`), and an
+  // empty one — none can be inlined as a valid mcpServers block.
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return null;
   }
-  return servers as Record<string, unknown>;
+  const servers = raw as Record<string, unknown>;
+  const entries = Object.values(servers);
+  if (entries.length === 0) {
+    return null;
+  }
+  // Without an explicit `mcpServers` wrapper we are guessing that the whole file is
+  // the servers map; only accept that when every value is an object (a server config),
+  // so non-MCP JSON like `{ "$schema": "...", "version": 1 }` is not misread as servers.
+  if (!hasWrapper && !entries.every((e) => e !== null && typeof e === "object")) {
+    return null;
+  }
+  return servers;
 }
 
 function classifyServers(servers: Record<string, unknown>): McpServerType {

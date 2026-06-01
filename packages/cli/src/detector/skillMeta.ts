@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
@@ -24,11 +24,17 @@ export interface SkillMeta {
  * A non-existent container yields an empty array.
  */
 export function enumerateSkills(containerDir: string): SkillMeta[] {
-  if (!existsSync(containerDir) || !statSync(containerDir).isDirectory()) {
-    return [];
+  let names: string[];
+  try {
+    if (!statSync(containerDir).isDirectory()) {
+      return [];
+    }
+    names = readdirSync(containerDir).sort();
+  } catch {
+    return []; // container missing / unreadable (EACCES) / vanished since layout resolution — skip
   }
   const out: SkillMeta[] = [];
-  for (const dir of readdirSync(containerDir).sort()) {
+  for (const dir of names) {
     const skillPath = join(containerDir, dir);
     try {
       if (!statSync(skillPath).isDirectory()) {

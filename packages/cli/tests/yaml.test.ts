@@ -56,6 +56,25 @@ describe("parseYamlFrontmatter: flat (back-compat)", () => {
     expect(out["q"]).toBe("quoted");
   });
 
+  test("keeps a zero-padded numeric scalar as a string (007 is not corrupted to 7)", () => {
+    const out = parseYamlFrontmatter("product: 007\n");
+    expect(out["product"]).toBe("007");
+  });
+
+  test("keeps an out-of-safe-range integer as a string (no precision loss)", () => {
+    const out = parseYamlFrontmatter("id: 12345678901234567890\n");
+    expect(out["id"]).toBe("12345678901234567890");
+  });
+});
+
+describe("extractFrontmatter: leading BOM", () => {
+  test("parses frontmatter despite a leading UTF-8 BOM (does not drop the skill)", () => {
+    const fm = extractFrontmatter("\uFEFF---\nname: foo\ndescription: bar\n---\nbody\n");
+    expect(fm).not.toBeNull();
+    expect(fm?.["name"]).toBe("foo");
+    expect(fm?.["description"]).toBe("bar");
+  });
+
   test("ignores comments and blank lines", () => {
     const out = parseYamlFrontmatter("# a comment\n\nname: foo\n");
     expect(out["name"]).toBe("foo");

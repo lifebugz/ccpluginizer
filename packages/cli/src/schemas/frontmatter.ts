@@ -26,8 +26,11 @@ export const SkillFrontmatterSchema = v.object({
 export type SkillFrontmatter = v.InferOutput<typeof SkillFrontmatterSchema>;
 
 export const AgentFrontmatterSchema = v.object({
-  name: v.string(),
-  description: v.string(),
+  // Match SkillFrontmatterSchema's leniency: a numeric/boolean name or description
+  // (e.g. `description: 2024`) is coerced to its string form so the agent is not
+  // silently dropped during detection while the equivalent skill would pass.
+  name: Stringy,
+  description: Stringy,
   model: v.optional(v.string()),
   effort: v.optional(v.string()),
   maxTurns: v.optional(v.number()),

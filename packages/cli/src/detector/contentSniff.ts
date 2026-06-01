@@ -47,12 +47,23 @@ export function detectContentSniff(repoRoot: string): readonly Finding[] {
 }
 
 function walk(repoRoot: string, dir: string, visit: (filePath: string) => void): void {
-  for (const entry of readdirSync(dir)) {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return; // unreadable dir (EACCES) or vanished mid-walk — skip rather than abort the scan
+  }
+  for (const entry of entries) {
     if (entry === "node_modules" || entry === ".git") {
       continue;
     }
     const fullPath = join(dir, entry);
-    const s = statSync(fullPath);
+    let s;
+    try {
+      s = statSync(fullPath);
+    } catch {
+      continue; // broken symlink / race between readdir and stat — skip this entry
+    }
     if (s.isDirectory()) {
       walk(repoRoot, fullPath, visit);
     } else if (s.isFile()) {

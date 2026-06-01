@@ -108,15 +108,19 @@ function printSplitNotice(
   const via = fellBack
     ? `${result.split.strategy} (deterministic; claude CLI not found)`
     : result.split.strategy;
+  const entryCount = result.entries.length;
   console.error(
-    `ccpluginizer: split into ${String(result.entries.length)} entries (${parts.join(" + ")}) via ${via} clustering. Use --no-split for a single entry.`,
+    `ccpluginizer: split into ${String(entryCount)} ${entryCount === 1 ? "entry" : "entries"} (${parts.join(" + ")}) via ${via} clustering. Use --no-split for a single entry.`,
   );
 }
 
 function toMarkerFile(draft: MarkerDraft): Record<string, unknown> {
   return {
     name: draft.name,
-    ...(draft.core ? { core: true } : {}),
+    // Emit `core` explicitly, even when false: synthesize reads `marker.core ?? true`,
+    // so omitting a false would silently re-enable the core entry on the next scan and
+    // a coreless split would not round-trip through the frozen marker.
+    core: draft.core,
     ...(draft.umbrella ? { umbrella: true } : {}),
     groups: draft.groups,
   };
@@ -163,6 +167,11 @@ interface OutputFlags {
 
 function emitOutput(entries: readonly MarketplaceEntry[], flags: OutputFlags): void {
   if (flags.outDir !== undefined) {
+    if (flags.output !== undefined) {
+      console.error(
+        "ccpluginizer: both --out-dir and --output given; --output is ignored (writing one file per entry into the directory).",
+      );
+    }
     mkdirSync(flags.outDir, { recursive: true });
     for (const entry of entries) {
       writeFileSync(join(flags.outDir, `${entry.name}.json`), JSON.stringify(entry, null, 2) + "\n", "utf8");

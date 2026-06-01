@@ -7,8 +7,10 @@
 // exotic is skipped rather than throwing.
 
 export function extractFrontmatter(fileContent: string): Record<string, unknown> | null {
-  // Normalize CRLF/CR → LF so Windows/autocrlf-authored files parse identically.
-  const text = fileContent.replace(/\r\n?/g, "\n");
+  // Strip a leading UTF-8 BOM, then normalize CRLF/CR → LF, so Windows/editor-authored
+  // files (which may begin with U+FEFF) still match the byte-0 frontmatter fence rather
+  // than being silently treated as having no frontmatter — which would drop the skill.
+  const text = fileContent.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const match = /^---\n([\s\S]*?)\n---/.exec(text);
   if (match === null) {
     return null;
@@ -194,7 +196,14 @@ function coerceYamlValue(raw: string): unknown {
   if (raw === "true") return true;
   if (raw === "false") return false;
   if (raw === "null" || raw === "~") return null;
-  if (/^-?\d+$/.test(raw)) return Number(raw);
+  if (/^-?\d+$/.test(raw)) {
+    // Only coerce when the number round-trips back to the exact source text. A
+    // zero-padded slug ("007") or an out-of-safe-range integer would otherwise be
+    // silently corrupted (007→7, large ids lose precision past 2^53); keep those
+    // as strings so the value survives intact.
+    const n = Number(raw);
+    return String(n) === raw ? n : raw;
+  }
   if (raw.startsWith('"') && raw.endsWith('"')) return raw.slice(1, -1);
   if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1);
   if (raw.startsWith("[") && raw.endsWith("]")) {

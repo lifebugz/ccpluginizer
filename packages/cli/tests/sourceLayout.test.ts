@@ -89,3 +89,43 @@ describe("resolveSourceLayout: filesystem robustness", () => {
     }
   });
 });
+
+describe("resolveSourceLayout: MCP robustness", () => {
+  test("falls through a malformed higher-priority .mcp.json to a valid one", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-fallthrough-"));
+    try {
+      // Root .mcp.json (shallowest → chosen first) is malformed; the valid one is deeper.
+      writeFileSync(join(tmp, ".mcp.json"), "{ not valid json");
+      mkdirSync(join(tmp, "sub"), { recursive: true });
+      writeFileSync(
+        join(tmp, "sub", ".mcp.json"),
+        JSON.stringify({ mcpServers: { telnyx: { type: "http", url: "https://x" } } }),
+      );
+      const layout = resolveSourceLayout(tmp);
+      expect(layout.mcp?.relPath).toBe("sub/.mcp.json");
+      expect(layout.mcp?.serverType).toBe("remote");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores a .mcp.json that is not a server map (e.g. {$schema, version})", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-nonserver-"));
+    try {
+      writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ $schema: "https://x", version: 1 }));
+      expect(resolveSourceLayout(tmp).mcp).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores an array-valued mcpServers (cannot be inlined as a servers object)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-array-"));
+    try {
+      writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ mcpServers: [{ command: "x" }] }));
+      expect(resolveSourceLayout(tmp).mcp).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

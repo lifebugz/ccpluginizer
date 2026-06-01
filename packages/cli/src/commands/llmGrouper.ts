@@ -11,6 +11,11 @@ export interface RawGroup {
   readonly members: string[];
 }
 
+// Cap the `claude -p` clustering call so a hung/stalled/auth-prompting CLI cannot
+// block the scan forever; on timeout spawnSync returns a non-zero status and we
+// fall back to deterministic clustering.
+const CLUSTER_TIMEOUT_MS = 120_000;
+
 /** Build a one-shot clustering prompt for the `claude -p` CLI. */
 export function buildClusterPrompt(skills: readonly SkillMeta[]): string {
   const lines = skills.map((s) => {
@@ -114,6 +119,7 @@ export function makeClaudeGrouper(): GroupSkillsFn | null {
     const result = spawnSync(claude, ["-p", buildClusterPrompt(skills)], {
       encoding: "utf8",
       maxBuffer: 32 * 1024 * 1024,
+      timeout: CLUSTER_TIMEOUT_MS,
     });
     if (result.status !== 0 || typeof result.stdout !== "string") {
       return Promise.resolve([]);
