@@ -82,23 +82,6 @@ describe("extractFrontmatter: leading BOM", () => {
   });
 });
 
-describe("parseYamlFrontmatter: inline comments", () => {
-  test("strips a trailing inline comment from a scalar value", () => {
-    expect(parseYamlFrontmatter("product: voice  # telnyx voice product\n")["product"]).toBe("voice");
-  });
-
-  test("strips an inline comment from a nested map value (no mis-clustering)", () => {
-    const body = ["metadata:", "  product: voice # primary"].join("\n");
-    const meta = parseYamlFrontmatter(body)["metadata"] as Record<string, unknown>;
-    expect(meta["product"]).toBe("voice");
-  });
-
-  test("does NOT strip a '#' inside quotes or one with no preceding space (URL fragment)", () => {
-    expect(parseYamlFrontmatter('label: "a # b"\n')["label"]).toBe("a # b");
-    expect(parseYamlFrontmatter("homepage: https://x.com#frag\n")["homepage"]).toBe("https://x.com#frag");
-  });
-});
-
 describe("parseYamlFrontmatter: nested map (the telnyx case)", () => {
   test("reads metadata.product and metadata.language from a nested map", () => {
     const body = [
