@@ -30,7 +30,11 @@ export function detectContentSniff(repoRoot: string): readonly Finding[] {
   if (skillDirs.size > 0) {
     findings.push({
       kind: "skills",
-      paths: Array.from(skillDirs).map((dir) => `./${relative(repoRoot, dir)}/`),
+      // Sort so emitted paths are deterministic across filesystems — the Set is
+      // populated in readdir (filesystem) order, which the split path never relies on.
+      paths: Array.from(skillDirs)
+        .map((dir) => `./${relative(repoRoot, dir)}/`)
+        .sort(),
       confidence: "medium",
       source: "sniff",
     });
@@ -38,7 +42,9 @@ export function detectContentSniff(repoRoot: string): readonly Finding[] {
   if (agentFiles.size > 0) {
     findings.push({
       kind: "agents",
-      paths: Array.from(agentFiles).map((file) => `./${relative(repoRoot, file)}`),
+      paths: Array.from(agentFiles)
+        .map((file) => `./${relative(repoRoot, file)}`)
+        .sort(),
       confidence: "medium",
       source: "sniff",
     });
@@ -73,5 +79,11 @@ function walk(repoRoot: string, dir: string, visit: (filePath: string) => void):
 }
 
 function parseFrontmatter(filePath: string): Record<string, unknown> | null {
-  return extractFrontmatter(readFileSync(filePath, "utf8"));
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, "utf8");
+  } catch {
+    return null; // vanished / EACCES between walk's stat and this read — skip, don't abort the scan
+  }
+  return extractFrontmatter(raw);
 }

@@ -176,6 +176,34 @@ describe("SkillFrontmatterSchema", () => {
       expect(result.output.tags).toEqual(["voice"]);
     }
   });
+
+  test("does not drop a skill for malformed advisory fields (metadata scalar, tags map, null product)", () => {
+    // The zero-dep YAML parser can yield these shapes (e.g. a deeply-nested or
+    // block-scalar `metadata.product` becomes null); they are clustering hints, so a
+    // bad shape must be ignored — never drop the skill, which has a valid description.
+    const scalarMeta = v.safeParse(SkillFrontmatterSchema, { description: "x", metadata: "telnyx" });
+    expect(scalarMeta.success).toBe(true);
+    expect(scalarMeta.success && scalarMeta.output.metadata?.product).toBeUndefined();
+
+    const nullProduct = v.safeParse(SkillFrontmatterSchema, { description: "x", metadata: { product: null } });
+    expect(nullProduct.success).toBe(true);
+
+    const tagsMap = v.safeParse(SkillFrontmatterSchema, { description: "x", tags: { a: "b" } });
+    expect(tagsMap.success).toBe(true);
+    expect(tagsMap.success && tagsMap.output.tags).toBeUndefined();
+  });
+
+  test("keeps valid metadata sub-fields even when a sibling is malformed", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, {
+      description: "x",
+      metadata: { product: "voice", language: null },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.metadata?.product).toBe("voice");
+      expect(result.output.metadata?.language).toBeUndefined();
+    }
+  });
 });
 
 describe("AgentFrontmatterSchema", () => {

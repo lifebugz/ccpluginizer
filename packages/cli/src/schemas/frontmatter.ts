@@ -5,30 +5,57 @@ import * as v from "valibot";
 // silently dropped during detection.
 const Stringy = v.pipe(v.union([v.string(), v.number(), v.boolean()]), v.transform(String));
 
-// Lenient string list: accept a YAML block/flow list OR a single bare scalar
-// (`tags: voice`) and normalize to an array, so a non-list value never drops the
-// whole skill during detection (mirrors the Stringy leniency for scalars).
-const StringyList = v.pipe(
-  v.union([v.array(Stringy), Stringy]),
-  v.transform((value) => (Array.isArray(value) ? value : [value])),
+const isScalar = (val: unknown): val is string | number | boolean =>
+  typeof val === "string" || typeof val === "number" || typeof val === "boolean";
+
+// Advisory scalar (product/language/.../category): these are clustering *hints*, not
+// skill-identity. A present-but-unusable shape (null, a map, a list — e.g. the
+// zero-dep YAML parser yields `product: null` for a deeply-nested value) must be
+// ignored, NOT cause the whole skill to be dropped. Anything non-scalar → undefined.
+const AdvisoryString = v.pipe(
+  v.unknown(),
+  v.transform((val) => (isScalar(val) ? String(val) : undefined)),
+);
+
+// Advisory string list (tags): accept a YAML block/flow list OR a single bare scalar
+// (`tags: voice`), drop non-scalar items, and treat any other shape (e.g. a map) as
+// absent — so a malformed `tags` never drops the skill (mirrors AdvisoryString).
+const AdvisoryStringList = v.pipe(
+  v.unknown(),
+  v.transform((val) => {
+    if (Array.isArray(val)) {
+      const items = val.filter(isScalar).map(String);
+      return items.length > 0 ? items : undefined;
+    }
+    return isScalar(val) ? [String(val)] : undefined;
+  }),
+);
+
+// Advisory nested metadata: a non-object value (scalar/array/null) collapses to an
+// empty map so the skill survives; declared keys are surfaced leniently and unknown
+// keys (generated_by, profile, ...) are ignored rather than rejected.
+const AdvisoryMetadata = v.pipe(
+  v.unknown(),
+  v.transform((val) =>
+    val !== null && typeof val === "object" && !Array.isArray(val)
+      ? (val as Record<string, unknown>)
+      : {},
+  ),
+  v.object({
+    product: v.optional(AdvisoryString),
+    language: v.optional(AdvisoryString),
+    author: v.optional(AdvisoryString),
+    category: v.optional(AdvisoryString),
+  }),
 );
 
 export const SkillFrontmatterSchema = v.object({
   name: v.optional(Stringy),
   description: Stringy,
   "disable-model-invocation": v.optional(v.boolean()),
-  // Lenient nested metadata: declared keys (product/language/...) are surfaced,
-  // unknown keys (generated_by, profile, ...) are ignored rather than rejected.
-  metadata: v.optional(
-    v.object({
-      product: v.optional(Stringy),
-      language: v.optional(Stringy),
-      author: v.optional(Stringy),
-      category: v.optional(Stringy),
-    }),
-  ),
-  tags: v.optional(StringyList),
-  category: v.optional(Stringy),
+  metadata: v.optional(AdvisoryMetadata),
+  tags: v.optional(AdvisoryStringList),
+  category: v.optional(AdvisoryString),
 });
 
 export type SkillFrontmatter = v.InferOutput<typeof SkillFrontmatterSchema>;
