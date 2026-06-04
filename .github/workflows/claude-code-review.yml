@@ -12,11 +12,17 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # Only auto-review real, human-authored code PRs. Skip:
+    #   - drafts (work in progress)
+    #   - bot/automation PRs (RELEASE_BOT, dependabot, etc.) via user.type
+    #   - the changeset "version packages" release PR (changeset-release/*)
+    #   - CI/chore housekeeping branches (ci/*, chore/*)
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type != 'Bot' &&
+      !startsWith(github.head_ref, 'changeset-release/') &&
+      !startsWith(github.head_ref, 'ci/') &&
+      !startsWith(github.head_ref, 'chore/')
 
     runs-on: ubuntu-latest
     permissions:
@@ -27,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
