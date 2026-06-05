@@ -12,12 +12,15 @@ on:
 
 jobs:
   claude-review:
-    # Only auto-review real, human-authored code PRs. Skip:
+    # Only auto-review the repository OWNER's own code PRs. The action enforces a
+    # write-access check internally; this if: additionally skips the job for
+    # anyone else so no runner even starts (stops PR-open spam). Also skip:
     #   - drafts (work in progress)
     #   - bot/automation PRs (RELEASE_BOT, dependabot, etc.) via user.type
     #   - the changeset "version packages" release PR (changeset-release/*)
     #   - CI/chore housekeeping branches (ci/*, chore/*)
     if: >-
+      github.event.pull_request.author_association == 'OWNER' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.type != 'Bot' &&
       !startsWith(github.head_ref, 'changeset-release/') &&

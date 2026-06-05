@@ -12,11 +12,14 @@ on:
 
 jobs:
   claude:
+    # Only the repository OWNER may summon Claude. The action enforces a
+    # write-access check internally; this if: additionally skips the job for
+    # anyone else so no runner even starts (stops @claude / comment spam).
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (github.event_name == 'issue_comment' && github.event.comment.author_association == 'OWNER' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && github.event.comment.author_association == 'OWNER' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && github.event.review.author_association == 'OWNER' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && github.event.issue.author_association == 'OWNER' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
       contents: read
