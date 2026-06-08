@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { GroupSkillsFn } from "../detector/partition.ts";
 import type { SkillMeta } from "../detector/skillMeta.ts";
@@ -11,12 +11,38 @@ export interface RawGroup {
   readonly members: string[];
 }
 
-// Cap the `claude -p` clustering call so a hung/stalled/auth-prompting CLI cannot
-// block the scan forever; on timeout spawnSync returns a non-zero status and we
-// fall back to deterministic clustering.
-const CLUSTER_TIMEOUT_MS = 120_000;
+/** Default backend timeout (ms); overridable per call via resolveLlmConfig's timeoutMs. */
+export const CLUSTER_TIMEOUT_DEFAULT_MS = 120_000;
 
-/** Build a one-shot clustering prompt for the `claude -p` CLI. */
+/** Cap a backend's stdout so a runaway/garbage response cannot exhaust memory. */
+export const CLUSTER_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
+
+/** The single-signature subset of spawnSync the backends depend on (so tests can fake it). */
+export type SpawnRun = (
+  command: string,
+  args: readonly string[],
+  options: { encoding: "utf8"; input?: string; maxBuffer: number; timeout: number },
+) => { error?: Error; signal: NodeJS.Signals | null; status: number | null; stdout: unknown };
+
+export interface ResolvedGrouper {
+  readonly fn: GroupSkillsFn;
+  readonly backendId: string;
+  readonly kind: "subprocess" | "claude";
+}
+
+export interface GrouperDeps {
+  readonly run?: SpawnRun;
+  readonly which?: (cmd: string) => string | null;
+  readonly cacheDir?: () => string;
+}
+
+export interface ResolveGrouperOpts {
+  readonly cmd?: string;
+  readonly cmdFromEnv: boolean;
+  readonly timeoutMs: number;
+}
+
+/** Build a one-shot clustering prompt for an LLM backend. */
 export function buildClusterPrompt(skills: readonly SkillMeta[]): string {
   const lines = skills.map((s) => {
     const product = s.product !== undefined ? ` [product=${s.product}]` : "";
@@ -41,10 +67,7 @@ export function buildClusterPrompt(skills: readonly SkillMeta[]): string {
 }
 
 /** Parse the model's response into validated groups, dropping hallucinated members. */
-export function parseClusterResponse(
-  text: string,
-  validDirs: ReadonlySet<string>,
-): RawGroup[] | null {
+export function parseClusterResponse(text: string, validDirs: ReadonlySet<string>): RawGroup[] | null {
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
   if (start === -1 || end === -1 || end < start) {
@@ -100,66 +123,176 @@ export function validateRawGroups(parsed: unknown): RawGroup[] | null {
 }
 
 /**
- * Return an injectable LLM grouper backed by the `claude` CLI, or null when the
- * CLI is unavailable (so callers fall back to deterministic clustering).
- * Results are cached on disk keyed by a content hash of the skill set.
+ * Resolve a BYO grouper by precedence: explicit subprocess command → `claude` on PATH → none.
+ * Each backend's raw output is gated by partition.ts; backends never touch the gate.
+ */
+export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {}): ResolvedGrouper | null {
+  const run: SpawnRun = deps.run ?? ((c, a, o): ReturnType<SpawnRun> => spawnSync(c, a, o));
+  const whichFn = deps.which ?? which;
+  const cacheDirFn = deps.cacheDir ?? defaultCacheDir;
+
+  if (opts.cmd !== undefined) {
+    return {
+      fn: makeSubprocessGrouper({ cmd: opts.cmd, fromEnv: opts.cmdFromEnv, timeoutMs: opts.timeoutMs }, { run, cacheDir: cacheDirFn }),
+      backendId: opts.cmd,
+      kind: "subprocess",
+    };
+  }
+
+  const claude = whichFn("claude");
+  if (claude !== null) {
+    return {
+      fn: claudeGrouper(claude, opts.timeoutMs, { run, cacheDir: cacheDirFn }),
+      backendId: "claude",
+      kind: "claude",
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Transitional shim preserving PR #26's zero-config `claude`-only behavior for
+ * scan.ts until it adopts resolveGrouper. Removed in the scan-wiring task (Task 5).
  */
 export function makeClaudeGrouper(): GroupSkillsFn | null {
-  const claude = which("claude");
-  if (claude === null) {
-    return null;
-  }
+  const resolved = resolveGrouper({ cmdFromEnv: false, timeoutMs: CLUSTER_TIMEOUT_DEFAULT_MS });
+  return resolved !== null && resolved.kind === "claude" ? resolved.fn : null;
+}
+
+interface BackendDeps {
+  readonly run: SpawnRun;
+  readonly cacheDir: () => string;
+}
+
+function makeSubprocessGrouper(
+  opts: { cmd: string; fromEnv: boolean; timeoutMs: number },
+  deps: BackendDeps,
+): GroupSkillsFn {
+  let noticeShown = false;
+  const [shell, shellFlag] = process.platform === "win32" ? ["cmd", "/c"] : ["sh", "-c"];
   return (skills: readonly SkillMeta[]): Promise<RawGroup[]> => {
     const validDirs = new Set(skills.map((s) => s.dir));
-    const cacheKey = hashSkills(skills);
-    const cached = readCache(cacheKey);
+    const cacheKey = hashSkills(skills, opts.cmd);
+    const cached = readCache(deps.cacheDir, cacheKey);
     if (cached !== null) {
       return Promise.resolve(cached);
     }
-    const result = spawnSync(claude, ["-p", buildClusterPrompt(skills)], {
+    // Trust/provenance: an env-sourced command is shell-executed; announce it once, here
+    // (not at construction), so a committed-marker win — which never invokes the grouper —
+    // never triggers it. Cache hits also skip it: the command genuinely did not run.
+    if (opts.fromEnv && !noticeShown) {
+      noticeShown = true;
+      console.error(`ccpluginizer: running LLM grouper from CCPLUGINIZER_LLM_CMD: ${opts.cmd}`);
+    }
+    const result = deps.run(shell, [shellFlag, opts.cmd], {
       encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-      timeout: CLUSTER_TIMEOUT_MS,
+      input: buildClusterPrompt(skills),
+      maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
+      timeout: opts.timeoutMs,
     });
-    if (result.status !== 0 || typeof result.stdout !== "string") {
+    if (isSpawnFailure(result)) {
       return Promise.resolve([]);
     }
-    const groups = parseClusterResponse(result.stdout, validDirs) ?? [];
-    // Only cache a non-empty grouping: an empty `[]` (a failed/garbled response)
-    // would be read back as a valid cache hit and permanently bypass the LLM.
+    const groups = parseClusterResponse(String(result.stdout), validDirs) ?? [];
     if (groups.length > 0) {
-      writeCache(cacheKey, groups);
+      writeCache(deps.cacheDir, cacheKey, groups);
     }
     return Promise.resolve(groups);
   };
+}
+
+function claudeGrouper(claudePath: string, timeoutMs: number, deps: BackendDeps): GroupSkillsFn {
+  return (skills: readonly SkillMeta[]): Promise<RawGroup[]> => {
+    const validDirs = new Set(skills.map((s) => s.dir));
+    const cacheKey = hashSkills(skills, "claude");
+    const cached = readCache(deps.cacheDir, cacheKey);
+    if (cached !== null) {
+      return Promise.resolve(cached);
+    }
+    const result = deps.run(claudePath, ["-p", buildClusterPrompt(skills)], {
+      encoding: "utf8",
+      maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
+      timeout: timeoutMs,
+    });
+    if (isSpawnFailure(result)) {
+      return Promise.resolve([]);
+    }
+    const groups = parseClusterResponse(String(result.stdout), validDirs) ?? [];
+    if (groups.length > 0) {
+      writeCache(deps.cacheDir, cacheKey, groups);
+    }
+    return Promise.resolve(groups);
+  };
+}
+
+/**
+ * Treat a run as failed when the process errored, was signalled (e.g. SIGTERM on timeout),
+ * exited non-zero, or produced no string stdout. On timeout spawnSync returns
+ * { status: null, signal: "SIGTERM", error: ETIMEDOUT } — so we key on error/signal, not status.
+ */
+function isSpawnFailure(result: ReturnType<SpawnRun>): boolean {
+  return (
+    result.error !== undefined ||
+    result.signal !== null ||
+    (result.status !== null && result.status !== 0) ||
+    typeof result.stdout !== "string"
+  );
 }
 
 function which(cmd: string): string | null {
   if (typeof Bun !== "undefined") {
     return Bun.which(cmd);
   }
-  // `which` does not exist on Windows; use `where` there. `where` can print
-  // several matches (one per line) — take the first.
   const finder = process.platform === "win32" ? "where" : "which";
   const r = spawnSync(finder, [cmd], { encoding: "utf8" });
   const out = typeof r.stdout === "string" ? (r.stdout.split("\n")[0] ?? "").trim() : "";
   return r.status === 0 && out !== "" ? out : null;
 }
 
-function hashSkills(skills: readonly SkillMeta[]): string {
+function hashSkills(skills: readonly SkillMeta[], backendId: string): string {
   const material = [...skills]
     .map((s) => `${s.dir}\x00${s.product ?? ""}\x00${s.description}`)
     .sort()
     .join("\n");
-  return createHash("sha256").update(material).digest("hex").slice(0, 32);
+  return createHash("sha256").update(backendId).update("\x00").update(material).digest("hex").slice(0, 32);
 }
 
-function cacheDir(): string {
-  return join(tmpdir(), "ccpluginizer-cache");
+function defaultCacheDir(): string {
+  return join(homedir(), ".cache", "ccpluginizer");
 }
 
-function readCache(key: string): RawGroup[] | null {
-  const file = join(cacheDir(), `${key}.json`);
+/** Create (0700) and verify the cache dir is user-private; return it, or null to skip caching. */
+function ensureCacheDir(dirFn: () => string): string | null {
+  const dir = dirFn();
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    return null;
+  }
+  // mkdir({mode}) is a no-op on a pre-existing dir, so verify perms after the fact (POSIX).
+  let st;
+  try {
+    st = statSync(dir);
+  } catch {
+    return null;
+  }
+  if (!st.isDirectory()) {
+    return null;
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid !== undefined && (st.uid !== uid || (st.mode & 0o077) !== 0)) {
+    return null;
+  }
+  return dir;
+}
+
+function readCache(dirFn: () => string, key: string): RawGroup[] | null {
+  const dir = ensureCacheDir(dirFn);
+  if (dir === null) {
+    return null;
+  }
+  const file = join(dir, `${key}.json`);
   if (!existsSync(file)) {
     return null;
   }
@@ -170,10 +303,13 @@ function readCache(key: string): RawGroup[] | null {
   }
 }
 
-function writeCache(key: string, groups: RawGroup[]): void {
+function writeCache(dirFn: () => string, key: string, groups: RawGroup[]): void {
+  const dir = ensureCacheDir(dirFn);
+  if (dir === null) {
+    return;
+  }
   try {
-    mkdirSync(cacheDir(), { recursive: true });
-    writeFileSync(join(cacheDir(), `${key}.json`), JSON.stringify(groups), "utf8");
+    writeFileSync(join(dir, `${key}.json`), JSON.stringify(groups), "utf8");
   } catch {
     // best-effort cache; ignore write failures
   }
