@@ -12,7 +12,7 @@ import type { ClusterStrategy, GroupSkillsFn } from "../detector/partition.ts";
 import type { MarketplaceEntry } from "../schemas/marketplaceEntry.ts";
 import { makeClaudeGrouper } from "./llmGrouper.ts";
 
-const STRATEGIES: readonly ClusterStrategy[] = ["auto", "llm", "metadata", "directory", "name-prefix"];
+const STRATEGIES: readonly ClusterStrategy[] = ["auto", "auto-llm", "llm", "metadata", "directory", "name-prefix"];
 
 export const scanCommand = new Crust("scan")
   .meta({ description: "Scan a non-plugin repo and emit a marketplace entry (auto-splits bloated plugins)" })
@@ -22,7 +22,9 @@ export const scanCommand = new Crust("scan")
     outDir: { type: "string", aliases: ["out-dir"], description: "Write one JSON file per entry into this directory" },
     split: { type: "boolean", default: true, description: "Auto-split bloated plugins (use --no-split to force one entry)" },
     umbrella: { type: "boolean", default: false, description: "Also emit the everything-in-one umbrella entry" },
-    cluster: { type: "string", default: "auto", description: "Clustering strategy: auto|llm|metadata|directory|name-prefix" },
+    cluster: { type: "string", default: "auto", description: "Clustering strategy: auto (deterministic, default) | auto-llm (deterministic, then BYO LLM on no clean partition) | llm (opt-in BYO subprocess/claude) | metadata | directory | name-prefix" },
+    llmCmd: { type: "string", aliases: ["llm-cmd"], description: "BYO LLM grouper command (prompt on stdin, JSON groups on stdout); used by --cluster=llm/auto-llm" },
+    llmTimeout: { type: "number", aliases: ["llm-timeout"], description: "LLM backend timeout in seconds (default 120)" },
     writeMarker: { type: "boolean", default: false, aliases: ["write-marker"], description: "Freeze the grouping into .ccpluginizer.json" },
     interactive: { type: "boolean", default: false, description: "Review the proposed split before emitting" },
     minSkills: { type: "number", default: 25, aliases: ["min-skills"], description: "Minimum skill count to attempt a split" },
@@ -86,6 +88,49 @@ function normalizeStrategy(value: string): ClusterStrategy {
   }
   console.error(`ccpluginizer: unknown --cluster "${value}"; using auto.`);
   return "auto";
+}
+
+export interface LlmConfig {
+  readonly cmd?: string;
+  readonly cmdFromEnv: boolean;
+  readonly timeoutMs: number;
+}
+
+const DEFAULT_TIMEOUT_SECONDS = 120;
+
+function trimOrUndefined(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+/**
+ * The single reader of process.env (Crust's command context exposes no environment).
+ * The optional `env` param exists purely so unit tests can pass a fake. Per-setting merge is
+ * flag-over-env, trimmed, with empty/whitespace coerced to undefined.
+ */
+export function resolveLlmConfig(
+  flags: { readonly llmCmd?: string; readonly llmTimeout?: number },
+  env: NodeJS.ProcessEnv = process.env,
+): LlmConfig {
+  const flagCmd = trimOrUndefined(flags.llmCmd);
+  const envCmd = trimOrUndefined(env["CCPLUGINIZER_LLM_CMD"]);
+  const cmd = flagCmd ?? envCmd;
+  const cmdFromEnv = flagCmd === undefined && envCmd !== undefined;
+
+  const envTimeout = trimOrUndefined(env["CCPLUGINIZER_LLM_TIMEOUT"]);
+  const resolvedSeconds =
+    flags.llmTimeout ?? (envTimeout !== undefined ? Number(envTimeout) : undefined) ?? DEFAULT_TIMEOUT_SECONDS;
+  const safeSeconds =
+    Number.isFinite(resolvedSeconds) && resolvedSeconds > 0 ? resolvedSeconds : DEFAULT_TIMEOUT_SECONDS;
+
+  return {
+    ...(cmd !== undefined ? { cmd } : {}),
+    cmdFromEnv,
+    timeoutMs: Math.round(safeSeconds * 1000),
+  };
 }
 
 function printSplitNotice(
