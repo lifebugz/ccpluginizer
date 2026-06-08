@@ -30,7 +30,7 @@ export interface SynthesizeEntriesInput extends SynthesizeInput {
   readonly umbrella?: boolean;
   /** Clustering strategy (default "auto"). */
   readonly strategy?: ClusterStrategy;
-  /** Injected (network-using) LLM grouper. */
+  /** Injected LLM grouper. */
   readonly group?: GroupSkillsFn;
   /** Minimum skill count to attempt a split (default 25). */
   readonly minSkillsToSplit?: number;
@@ -57,6 +57,8 @@ export interface SynthesizeEntriesResult {
   readonly marker: MarkerDraft | null;
   /** Advisory messages for the caller to surface (e.g. dropped artifacts, placeholder URLs). */
   readonly warnings: string[];
+  /** True iff `partitionSkills` was called and returned null (above-threshold, no clean partition). */
+  readonly splitAttemptedButEmpty: boolean;
 }
 
 /**
@@ -70,6 +72,7 @@ export async function synthesizeEntries(
   const wantSplit = input.split ?? true;
   const minSkills = input.minSkillsToSplit ?? DEFAULT_MIN_SKILLS_TO_SPLIT;
   const marker = detectMarkerFile(input.repoRoot);
+  let splitAttemptedButEmpty = false;
 
   // A committed marker WITHOUT groups is an explicit single-entry curation — honor
   // it rather than auto-splitting (the single-entry path applies marker.name/skills).
@@ -105,15 +108,17 @@ export async function synthesizeEntries(
             split: { strategy: result.strategy, groupCount: result.groups.length },
             marker: markerDraft,
             warnings: collectSplitWarnings(input.repoRoot, layout, input.sourceRepo, markerDraft.core, markerDraft.umbrella),
+            splitAttemptedButEmpty: false,
           };
         }
+        splitAttemptedButEmpty = true;
       }
     }
   }
 
   // Fall through: a single entry, identical to today (this also runs the
   // marketplace guard, preserving the abort for non-sliceable plugin repos).
-  return { entries: [synthesizeEntry(input)], split: null, marker: null, warnings: [] };
+  return { entries: [synthesizeEntry(input)], split: null, marker: null, warnings: [], splitAttemptedButEmpty };
 }
 
 /** Advisory warnings for an emitted split (artifacts the slices/core cannot carry). */

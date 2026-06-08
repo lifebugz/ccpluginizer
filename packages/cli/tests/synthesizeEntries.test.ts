@@ -334,3 +334,46 @@ describe("synthesizeEntries: warnings", () => {
     }
   });
 });
+
+describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
+  test("true when above threshold but no clean partition exists", async () => {
+    const root = makeNestedPlugin({ products: { solo: 6 } }); // one product -> no partition
+    try {
+      const res = await synthesizeEntries({
+        repoRoot: root,
+        sourceRepo: "test/solo",
+        strategy: "metadata",
+        minSkillsToSplit: 2,
+      });
+      expect(res.split).toBeNull();
+      expect(res.splitAttemptedButEmpty).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("false on a successful split", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
+    try {
+      const res = await synthesizeEntries({
+        repoRoot: root,
+        sourceRepo: "test/telnyx",
+        strategy: "metadata",
+        minSkillsToSplit: 2,
+      });
+      expect(res.split).not.toBeNull();
+      expect(res.splitAttemptedButEmpty).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("false when sub-threshold (partitionSkills never called)", async () => {
+    const res = await synthesizeEntries({
+      repoRoot: join(FIXTURES, "skills-only"),
+      sourceRepo: "test/skills-only",
+    });
+    expect(res.split).toBeNull();
+    expect(res.splitAttemptedButEmpty).toBe(false);
+  });
+});
