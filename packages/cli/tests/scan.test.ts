@@ -47,8 +47,8 @@ function curatedEnv(extra: Record<string, string> = {}): Record<string, string> 
   }
   return {
     PATH: dirs.join(":"),
-    HOME: process.env.HOME ?? tmpdir(),
-    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    HOME: process.env["HOME"] ?? tmpdir(),
+    TMPDIR: process.env["TMPDIR"] ?? tmpdir(),
     ...extra,
   };
 }
@@ -236,6 +236,142 @@ describe("scan CLI: --cluster=llm notices", () => {
       expect(stderr).toMatch(/--cluster=llm produced no split/);
       expect(stderr).toMatch(/no LLM backend available/);
       expect(Array.isArray(JSON.parse(stdout))).toBe(false); // single entry
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A valid 2-group cover of telnyx-solo-0..5 (each group 3 of 6 -> passes the gate). */
+const SOLO6_JSON = JSON.stringify([
+  { slug: "x", members: ["telnyx-solo-0", "telnyx-solo-1", "telnyx-solo-2"] },
+  { slug: "y", members: ["telnyx-solo-3", "telnyx-solo-4", "telnyx-solo-5"] },
+]);
+
+describe("scan CLI: subprocess backend (--llm-cmd)", () => {
+  test("a valid stub rescues a repo deterministic can't partition; notice names subprocess", async () => {
+    const root = makeNestedPlugin({ solo: 6 });
+    const home = mkdtempSync(join(tmpdir(), "ccp-home-")); // cold cache
+    try {
+      const cmd = `cat >/dev/null; printf '%s' '${SOLO6_JSON}'`;
+      const { stderr, stdout, code } = await runScan(
+        [root, "--cluster=auto-llm", "--min-skills=2", `--llm-cmd=${cmd}`],
+        { env: { HOME: home } },
+      );
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/via subprocess clustering/);
+      expect(Array.isArray(JSON.parse(stdout))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--llm-timeout is honored: a slow stub times out and falls back to deterministic", async () => {
+    const root = makeNestedPlugin({ messaging: 4, voice: 4 }); // deterministic succeeds on fallback
+    const home = mkdtempSync(join(tmpdir(), "ccp-home-"));
+    try {
+      const { stderr, stdout, code } = await runScan(
+        [root, "--cluster=llm", "--min-skills=2", "--llm-timeout=1", "--llm-cmd=sleep 5"],
+        { env: { HOME: home } },
+      );
+      expect(code).toBe(0);
+      expect(Array.isArray(JSON.parse(stdout))).toBe(true); // deterministic split emitted
+      expect(stderr).toMatch(/LLM backend produced no acceptable grouping or was unreachable/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("flag overrides env for --llm-cmd", async () => {
+    const root = makeNestedPlugin({ solo: 6 });
+    const home = mkdtempSync(join(tmpdir(), "ccp-home-"));
+    const envSentinel = join(mkdtempSync(join(tmpdir(), "ccp-sent-")), "env-ran");
+    try {
+      const flagCmd = `cat >/dev/null; printf '%s' '${SOLO6_JSON}'`;
+      const { stdout, code } = await runScan(
+        [root, "--cluster=auto-llm", "--min-skills=2", `--llm-cmd=${flagCmd}`],
+        { env: { HOME: home, CCPLUGINIZER_LLM_CMD: `touch ${envSentinel}` } },
+      );
+      expect(code).toBe(0);
+      expect(Array.isArray(JSON.parse(stdout))).toBe(true);
+      expect(existsSync(envSentinel)).toBe(false); // env command never ran; the flag won
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(dirname(envSentinel), { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scan CLI: marker short-circuit beats a configured LLM", () => {
+  test("committed marker + CCPLUGINIZER_LLM_CMD set -> marker notice only, command not run", async () => {
+    const root = makeNestedPlugin({ messaging: 4, voice: 4 });
+    // Freeze a grouping first, then re-scan with an env command that would touch a sentinel.
+    await runScan([root, "--cluster=metadata", "--min-skills=2", "--write-marker"]);
+    const sentinel = join(mkdtempSync(join(tmpdir(), "ccp-sent-")), "ran");
+    try {
+      const { stderr, code } = await runScan(
+        [root, "--cluster=llm", "--min-skills=2"],
+        { env: { CCPLUGINIZER_LLM_CMD: `touch ${sentinel}` } },
+      );
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/via committed marker \(\.ccpluginizer\.json\)/);
+      expect(stderr).not.toMatch(/no LLM backend|running LLM grouper/);
+      expect(existsSync(sentinel)).toBe(false); // marker short-circuit -> grouper never invoked
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(dirname(sentinel), { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scan CLI: auto-llm reproducibility + rescue", () => {
+  test("well-named repo: deterministic wins, stub never runs, bytes identical to auto", async () => {
+    const root = makeNestedPlugin({ messaging: 4, voice: 4 });
+    const sentinel = join(mkdtempSync(join(tmpdir(), "ccp-sent-")), "ran");
+    try {
+      const auto = await runScan([root, "--cluster=auto", "--min-skills=2"]);
+      const autoLlm = await runScan(
+        [root, "--cluster=auto-llm", "--min-skills=2", `--llm-cmd=touch ${sentinel}; printf '%s' '${SOLO6_JSON}'`],
+      );
+      expect(auto.code).toBe(0);
+      expect(autoLlm.code).toBe(0);
+      expect(autoLlm.stdout).toBe(auto.stdout); // byte-identical entries
+      expect(autoLlm.stderr).not.toMatch(/running LLM grouper|deterministic-only/); // no provenance, no hint
+      expect(existsSync(sentinel)).toBe(false); // grouper never executed
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(dirname(sentinel), { recursive: true, force: true });
+    }
+  });
+
+  test("unpartitionable repo + rejecting stub -> produced-no-split naming auto-llm (resolved variant)", async () => {
+    const root = makeNestedPlugin({ solo: 6 });
+    const home = mkdtempSync(join(tmpdir(), "ccp-home-"));
+    try {
+      const { stderr, stdout, code } = await runScan(
+        [root, "--cluster=auto-llm", "--min-skills=2", "--llm-cmd=cat >/dev/null; printf 'not json'"],
+        { env: { HOME: home } },
+      );
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/--cluster=auto-llm produced no split/);
+      expect(stderr).toMatch(/no acceptable LLM grouping/);
+      expect(Array.isArray(JSON.parse(stdout))).toBe(false); // single entry
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("unpartitionable repo + no backend -> produced-no-split naming auto-llm (degrade variant)", async () => {
+    const root = makeNestedPlugin({ solo: 6 });
+    try {
+      const { stderr, code } = await runScan([root, "--cluster=auto-llm", "--min-skills=2"]);
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/--cluster=auto-llm produced no split/);
+      expect(stderr).toMatch(/no LLM backend available/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
