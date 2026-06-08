@@ -39,6 +39,11 @@ function telnyxLike(): SkillMeta[] {
   return skills;
 }
 
+/** A set no deterministic strategy can partition: one product, distinct languages only. */
+function unpartitionable(): SkillMeta[] {
+  return LANGS.map((l) => mk(`solo-${l}`, "solo", l));
+}
+
 function totalCovered(groups: Grouping): string[] {
   return groups.flatMap((g) => g.skills.map((s) => s.dir)).sort();
 }
@@ -155,10 +160,11 @@ describe("partitionSkills: orchestrator", () => {
     );
   });
 
-  test("auto uses an injected LLM grouper first when it passes the gate", async () => {
+  test("auto never invokes the injected grouper (deterministic-only)", async () => {
     const skills = telnyxLike();
+    let called = false;
     const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> => {
-      // crude llm stand-in: two balanced halves
+      called = true;
       const half = Math.ceil(s.length / 2);
       return Promise.resolve([
         { slug: "first", members: s.slice(0, half).map((x) => x.dir) },
@@ -166,9 +172,61 @@ describe("partitionSkills: orchestrator", () => {
       ]);
     };
     const result = await partitionSkills(skills, { strategy: "auto", group });
+    expect(called).toBe(false);
+    expect(result?.strategy).toBe("metadata");
+  });
+
+  test("llm cascades to a deterministic strategy when the model output is gate-rejected", async () => {
+    const skills = telnyxLike(); // well-named: deterministic succeeds
+    const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> =>
+      // one group with everything -> >70% and K<2 -> gate rejects
+      Promise.resolve([{ slug: "all", members: s.map((x) => x.dir) }]);
+    const result = await partitionSkills(skills, { strategy: "llm", group });
+    expect(result).not.toBeNull();
+    expect(result?.strategy).toBe("metadata");
+  });
+
+  test("llm with no grouper falls through to the deterministic cascade", async () => {
+    const skills = telnyxLike();
+    const result = await partitionSkills(skills, { strategy: "llm" });
+    expect(result?.strategy).toBe("metadata");
+  });
+
+  test("auto-llm: deterministic win skips the grouper entirely", async () => {
+    const skills = telnyxLike();
+    let called = false;
+    const group = (): Promise<{ slug: string; members: string[] }[]> => {
+      called = true;
+      return Promise.resolve([]);
+    };
+    const result = await partitionSkills(skills, { strategy: "auto-llm", group });
+    expect(called).toBe(false);
+    expect(result?.strategy).toBe("metadata");
+  });
+
+  test("auto-llm: invokes the grouper only when deterministic finds no partition", async () => {
+    const skills = unpartitionable();
+    let called = false;
+    const half = Math.ceil(skills.length / 2);
+    const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> => {
+      called = true;
+      return Promise.resolve([
+        { slug: "first", members: s.slice(0, half).map((x) => x.dir) },
+        { slug: "second", members: s.slice(half).map((x) => x.dir) },
+      ]);
+    };
+    const result = await partitionSkills(skills, { strategy: "auto-llm", group });
+    expect(called).toBe(true);
     expect(result?.strategy).toBe("llm");
-    expect(result?.groups.map((g) => g.slug).sort()).toEqual(["first", "second"]);
     assertDisjointTotalCover(result?.groups ?? [], skills);
+  });
+
+  test("auto-llm: returns null when both deterministic and the grouper fail", async () => {
+    const skills = unpartitionable();
+    const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> =>
+      Promise.resolve([{ slug: "all", members: s.map((x) => x.dir) }]); // rejected by gate
+    const result = await partitionSkills(skills, { strategy: "auto-llm", group });
+    expect(result).toBeNull();
   });
 
   test("tolerates a malformed LLM grouper response (null/garbage elements) without crashing", async () => {

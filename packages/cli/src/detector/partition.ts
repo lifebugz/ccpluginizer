@@ -7,8 +7,13 @@ export interface SkillGroup {
 }
 export type Grouping = SkillGroup[];
 
-/** Strategy a caller may request; `auto` runs the full cascade (llm → deterministic). */
-export type ClusterStrategy = "auto" | "llm" | "metadata" | "directory" | "name-prefix";
+/**
+ * Strategy a caller may request.
+ * - `auto` (default): deterministic-only cascade (metadata → directory → name-prefix); the injected grouper is never invoked.
+ * - `auto-llm`: deterministic-first; the injected grouper rescues only when deterministic finds no clean partition.
+ * - `llm`: prefer the injected grouper, then cascade to deterministic if it yields nothing acceptable.
+ */
+export type ClusterStrategy = "auto" | "auto-llm" | "llm" | "metadata" | "directory" | "name-prefix";
 /** Strategy actually used to produce a result. */
 export type ResolvedStrategy = "marker" | "llm" | "metadata" | "directory" | "name-prefix";
 
@@ -17,7 +22,7 @@ export interface PartitionResult {
   readonly groups: Grouping;
 }
 
-/** Injected (network-using) LLM grouper — returns slugged buckets of skill dir names. */
+/** Injected LLM grouper — returns slugged buckets of skill dir names. */
 export type GroupSkillsFn = (
   skills: readonly SkillMeta[],
 ) => Promise<{ slug: string; members: string[] }[]>;
@@ -282,6 +287,32 @@ function normalizePath(p: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Deterministic cascade (shared by `auto`, `auto-llm`, and the `llm` fallback).
+// ---------------------------------------------------------------------------
+
+const deterministicFns: Record<
+  "metadata" | "directory" | "name-prefix",
+  (skills: readonly SkillMeta[]) => Grouping | null
+> = {
+  metadata: partitionByMetadata,
+  directory: partitionByDirectory,
+  "name-prefix": partitionByNamePrefix,
+};
+
+/** Try metadata → directory → name-prefix; return the first gated grouping (tagged), else null. */
+function deterministicCascade(
+  skills: readonly SkillMeta[],
+): { strategy: ResolvedStrategy; groups: Grouping } | null {
+  for (const name of ["metadata", "directory", "name-prefix"] as const) {
+    const groups = deterministicFns[name](skills);
+    if (groups !== null) {
+      return { strategy: name, groups };
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -307,31 +338,27 @@ export async function partitionSkills(
     return acceptRawGroups(mapRawGroups(skills, raw), skills.length);
   };
 
-  const deterministic: Record<"metadata" | "directory" | "name-prefix", (s: readonly SkillMeta[]) => Grouping | null> = {
-    metadata: partitionByMetadata,
-    directory: partitionByDirectory,
-    "name-prefix": partitionByNamePrefix,
-  };
-
   if (strategy === "auto") {
-    const llm = await runLlm();
-    if (llm !== null) {
-      return { strategy: "llm", groups: llm };
-    }
-    for (const name of ["metadata", "directory", "name-prefix"] as const) {
-      const g = deterministic[name](skills);
-      if (g !== null) {
-        return { strategy: name, groups: g };
-      }
-    }
-    return null;
+    return deterministicCascade(skills);
   }
 
   if (strategy === "llm") {
     const llm = await runLlm();
+    if (llm !== null) {
+      return { strategy: "llm", groups: llm };
+    }
+    return deterministicCascade(skills);
+  }
+
+  if (strategy === "auto-llm") {
+    const deterministic = deterministicCascade(skills);
+    if (deterministic !== null) {
+      return deterministic;
+    }
+    const llm = await runLlm();
     return llm === null ? null : { strategy: "llm", groups: llm };
   }
 
-  const g = deterministic[strategy](skills);
-  return g === null ? null : { strategy, groups: g };
+  const groups = deterministicFns[strategy](skills);
+  return groups === null ? null : { strategy, groups };
 }
