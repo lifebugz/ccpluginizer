@@ -56,15 +56,27 @@ So `scan` **splits by default, but only when it helps**. When a repo has many sk
 Install only the domains you need; the skill-listing budget is charged only for those. Small or single-domain repos are unaffected — output is byte-identical to a single entry, and a one-line `stderr` notice reports whenever (and how) a split happened.
 
 ```bash
-ccpluginizer scan team-telnyx/ai                 # auto-split (LLM clustering when `claude` is available, else deterministic)
+ccpluginizer scan team-telnyx/ai                 # auto-split (deterministic, offline — no LLM)
 ccpluginizer scan team-telnyx/ai --no-split      # force a single entry
 ccpluginizer scan team-telnyx/ai --umbrella      # also emit the everything-in-one entry (reintroduces full cost)
-ccpluginizer scan team-telnyx/ai --cluster=metadata   # force a clustering strategy: auto|llm|metadata|directory|name-prefix
+ccpluginizer scan team-telnyx/ai --cluster=auto-llm --llm-cmd "ollama run llama3"   # deterministic first, LLM only if no clean partition
+ccpluginizer scan team-telnyx/ai --cluster=llm   --llm-cmd "llm -m gpt-4o-mini"     # LLM-first (deterministic fallback)
 ccpluginizer scan team-telnyx/ai --out-dir=entries    # write one JSON file per emitted entry
-ccpluginizer scan team-telnyx/ai --write-marker       # freeze the grouping into .ccpluginizer.json (the re-scan contract)
+ccpluginizer scan team-telnyx/ai --cluster=auto-llm --write-marker   # freeze the emitted grouping into .ccpluginizer.json
 ```
 
-The committed entries (or a `.ccpluginizer.json` marker) are the source of truth: CI validates them rather than re-clustering, so the split is deterministic at the artifact level even though a fresh LLM scan may vary.
+**Clustering strategies.** `--cluster` selects how skills are grouped:
+
+- `auto` (default) — deterministic only (`metadata` → `directory` → `name-prefix`). No subprocess, no network; identical output for every user, even with an LLM configured. This is the reproducible path and needs no LLM.
+- `auto-llm` (**recommended when you have an LLM**) — deterministic first; the LLM is invoked *only* for repos the heuristics can't partition cleanly. Well-named repos stay byte-reproducible (the LLM is never touched); the messy minority gets rescued. Freeze the rescue with `--cluster=auto-llm --write-marker` + commit to make the whole repo reproducible thereafter.
+- `llm` — LLM-first: prefer the model's grouping, fall back to deterministic if it produces nothing acceptable.
+- `metadata` / `directory` / `name-prefix` — force one deterministic strategy.
+
+**Bring your own LLM.** `--cluster=llm`/`auto-llm` resolve a backend by precedence: an explicit subprocess command (`--llm-cmd`, or the `CCPLUGINIZER_LLM_CMD` env var) → the `claude` CLI if on PATH → none. A subprocess backend reads the clustering prompt on **stdin** and writes a JSON array `[{"slug","members":[...]}]` to **stdout**, so any tool fits: `--llm-cmd "ollama run llama3"`, `--llm-cmd "llm -m gpt-4o-mini"`, `--llm-cmd "claude -p"`, `--llm-cmd "./my-grouper.sh"`, or an OpenAI-compatible one-liner `--llm-cmd 'curl -s https://api.openai.com/v1/chat/completions -H "Authorization: Bearer $OPENAI_API_KEY" -d @- | jq ...'`. Tune the per-call ceiling with `--llm-timeout <seconds>` (default 120). Whatever a backend returns passes the same acceptance gate as everything else, so a weak or garbled model can never emit a broken split — it is rejected and the tool falls back. A native HTTP (`--llm-url`) backend is **deferred** to a later minor (see the design spec's Non-goals).
+
+**Reproducibility for LLM users:** `--write-marker` + commit. It freezes whatever was *emitted* — a deterministic win (including `auto-llm`'s), the accepted LLM grouping, or the deterministic fallback when the model's output was rejected — into `.ccpluginizer.json`. A committed marker grouping always wins verbatim, so every later scan (LLM-less collaborators and CI included) reproduces that exact split.
+
+**Security boundary.** Under `--cluster=llm`/`auto-llm`, `--llm-cmd`/`CCPLUGINIZER_LLM_CMD` is **shell-executed** — do not auto-load it from untrusted repos (`direnv`/`.envrc`). A secret **inlined** into the command is echoed verbatim to stderr (and CI logs) by the provenance notice, so pass keys via an env var the child expands (`$OPENAI_API_KEY`), never as a literal. The skills prompt (dir names + truncated descriptions) **leaves the machine** to whatever the command contacts.
 
 **Limitations** (each is reported on `stderr` when it applies):
 
