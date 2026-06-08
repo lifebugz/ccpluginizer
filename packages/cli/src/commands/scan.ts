@@ -8,9 +8,9 @@ import {
   type MarkerDraft,
   type SynthesizeEntriesResult,
 } from "../detector/synthesize.ts";
-import type { ClusterStrategy, GroupSkillsFn } from "../detector/partition.ts";
+import type { ClusterStrategy, ResolvedStrategy } from "../detector/partition.ts";
 import type { MarketplaceEntry } from "../schemas/marketplaceEntry.ts";
-import { makeClaudeGrouper } from "./llmGrouper.ts";
+import { resolveGrouper, type ResolvedGrouper } from "./llmGrouper.ts";
 
 const STRATEGIES: readonly ClusterStrategy[] = ["auto", "auto-llm", "llm", "metadata", "directory", "name-prefix"];
 
@@ -35,14 +35,19 @@ export const scanCommand = new Crust("scan")
 
     const requestedCluster = normalizeStrategy(flags.cluster);
     const wantSplit = flags.split;
-    const group = wantSplit && (requestedCluster === "auto" || requestedCluster === "llm") ? makeClaudeGrouper() : null;
+    const llmConfig = resolveLlmConfig({
+      ...(flags.llmCmd !== undefined ? { llmCmd: flags.llmCmd } : {}),
+      ...(flags.llmTimeout !== undefined ? { llmTimeout: flags.llmTimeout } : {}),
+    });
+    const usesLlm = requestedCluster === "llm" || requestedCluster === "auto-llm";
+    const resolved: ResolvedGrouper | null = wantSplit && usesLlm ? resolveGrouper(llmConfig) : null;
 
-    // If --cluster=llm was requested but the claude CLI is absent, actually cascade
-    // through deterministic strategies so the "falling back" message is truthful.
-    let cluster = requestedCluster;
-    if (wantSplit && requestedCluster === "llm" && group === null) {
-      console.error("ccpluginizer: --cluster=llm requested but the `claude` CLI was not found; falling back to deterministic clustering.");
-      cluster = "auto";
+    // Decision B: an explicitly-configured LLM command is ignored under deterministic `auto`
+    // (NOT auto-llm, which uses it as a rescue; NOT merely because `claude` is on PATH).
+    if (requestedCluster === "auto" && llmConfig.cmd !== undefined) {
+      console.error(
+        "ccpluginizer: an LLM is configured (CCPLUGINIZER_LLM_CMD) but auto is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.",
+      );
     }
 
     let result = await synthesizeEntries({
@@ -50,17 +55,19 @@ export const scanCommand = new Crust("scan")
       sourceRepo,
       split: wantSplit,
       umbrella: flags.umbrella,
-      strategy: cluster,
+      strategy: requestedCluster,
       minSkillsToSplit: flags.minSkills,
-      ...(group !== null ? { group } : {}),
+      ...(resolved !== null ? { group: resolved.fn } : {}),
     });
 
     if (flags.interactive && result.split !== null) {
-      result = await reviewSplit(result, { repoPath, sourceRepo, minSkills: flags.minSkills });
+      result = await reviewSplit(result, { repoPath, sourceRepo, minSkills: flags.minSkills, requestedCluster, resolved });
     }
 
     if (result.split !== null) {
-      printSplitNotice(result, cluster, group);
+      printSplitNotice(result, requestedCluster, resolved);
+    } else if (result.splitAttemptedButEmpty && usesLlm) {
+      printNoSplitNotice(requestedCluster, resolved);
     }
 
     for (const warning of result.warnings) {
@@ -133,10 +140,35 @@ export function resolveLlmConfig(
   };
 }
 
-function printSplitNotice(
+/** Render the resolved-strategy clause for a notice or the review screen. */
+function describeStrategy(
+  strategy: ResolvedStrategy,
+  requestedCluster: ClusterStrategy,
+  resolved: ResolvedGrouper | null,
+): string {
+  if (strategy === "marker") {
+    return "via committed marker (.ccpluginizer.json)";
+  }
+  if (strategy === "llm") {
+    const kind = resolved?.kind ?? "subprocess";
+    return `via ${kind} clustering`;
+  }
+  // A deterministic strategy under --cluster=llm (LLM-first) means the model failed and we fell back.
+  if (requestedCluster === "llm") {
+    const reason =
+      resolved !== null
+        ? "LLM backend produced no acceptable grouping or was unreachable"
+        : "no LLM backend found; set --llm-cmd or install the `claude` CLI";
+    return `via ${strategy} clustering (${reason})`;
+  }
+  // auto, a named deterministic strategy, or auto-llm where deterministic won outright (a success).
+  return `via ${strategy} clustering`;
+}
+
+export function printSplitNotice(
   result: SynthesizeEntriesResult,
-  cluster: ClusterStrategy,
-  group: GroupSkillsFn | null,
+  requestedCluster: ClusterStrategy,
+  resolved: ResolvedGrouper | null,
 ): void {
   if (result.split === null) {
     return;
@@ -149,13 +181,20 @@ function printSplitNotice(
   if (result.marker?.umbrella === true) {
     parts.push("1 umbrella");
   }
-  const fellBack = cluster === "auto" && group === null;
-  const via = fellBack
-    ? `${result.split.strategy} (deterministic; claude CLI not found)`
-    : result.split.strategy;
   const entryCount = result.entries.length;
+  const via = describeStrategy(result.split.strategy, requestedCluster, resolved);
   console.error(
-    `ccpluginizer: split into ${String(entryCount)} ${entryCount === 1 ? "entry" : "entries"} (${parts.join(" + ")}) via ${via} clustering. Use --no-split for a single entry.`,
+    `ccpluginizer: split into ${String(entryCount)} ${entryCount === 1 ? "entry" : "entries"} (${parts.join(" + ")}) ${via}. Use --no-split for a single entry.`,
+  );
+}
+
+export function printNoSplitNotice(requestedCluster: ClusterStrategy, resolved: ResolvedGrouper | null): void {
+  const reason =
+    resolved !== null
+      ? "no acceptable LLM grouping and no clean deterministic partition"
+      : "no clean deterministic partition and no LLM backend available";
+  console.error(
+    `ccpluginizer: --cluster=${requestedCluster} produced no split — ${reason}; emitting a single entry.`,
   );
 }
 
@@ -175,26 +214,32 @@ interface ReviewContext {
   readonly repoPath: string;
   readonly sourceRepo: string;
   readonly minSkills: number;
+  readonly requestedCluster: ClusterStrategy;
+  readonly resolved: ResolvedGrouper | null;
 }
 
-async function reviewSplit(
+type ConfirmFn = (opts: { message: string; default: boolean }) => Promise<boolean>;
+
+export async function reviewSplit(
   result: SynthesizeEntriesResult,
   ctx: ReviewContext,
+  confirmFn: ConfirmFn = (opts) => confirm(opts),
 ): Promise<SynthesizeEntriesResult> {
-  console.error("ccpluginizer: proposed split —");
+  const via =
+    result.split !== null ? ` — ${describeStrategy(result.split.strategy, ctx.requestedCluster, ctx.resolved)}` : "";
+  console.error(`ccpluginizer: proposed split${via}`);
   for (const g of result.marker?.groups ?? []) {
     console.error(`  ${g.slug}: ${String(g.skills.length)} skills`);
   }
-  const proceed = await confirm({
+  const proceed = await confirmFn({
     message: `Emit this ${String(result.split?.groupCount ?? 0)}-way split?`,
     default: true,
   });
   if (proceed) {
     return result;
   }
-  // Re-synthesize as a single entry BEFORE announcing it: an already-marketplace
-  // repo intentionally aborts here (checkMarketplaceGuard), so we must not promise
-  // a single entry we then fail to emit.
+  // Re-synthesize as a single entry BEFORE announcing it: an already-marketplace repo aborts
+  // here (checkMarketplaceGuard), so we must not promise a single entry we then fail to emit.
   const single = await synthesizeEntries({
     repoRoot: ctx.repoPath,
     sourceRepo: ctx.sourceRepo,

@@ -151,15 +151,6 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
   return null;
 }
 
-/**
- * Transitional shim preserving PR #26's zero-config `claude`-only behavior for
- * scan.ts until it adopts resolveGrouper. Removed in the scan-wiring task (Task 5).
- */
-export function makeClaudeGrouper(): GroupSkillsFn | null {
-  const resolved = resolveGrouper({ cmdFromEnv: false, timeoutMs: CLUSTER_TIMEOUT_DEFAULT_MS });
-  return resolved !== null && resolved.kind === "claude" ? resolved.fn : null;
-}
-
 interface BackendDeps {
   readonly run: SpawnRun;
   readonly cacheDir: () => string;
