@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 
@@ -38,8 +38,32 @@ function makeNestedPlugin(products: Record<string, number>, extras?: { hooks?: b
   return root;
 }
 
-async function runScan(scanArgs: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  const proc = Bun.spawn(["bun", "run", CLI, "scan", ...scanArgs], { stdout: "pipe", stderr: "pipe" });
+/** Curated PATH so Bun.which("claude") is null inside the child (hermetic auto/llm detection). */
+function curatedEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const dirs = ["/bin", "/usr/bin"];
+  const bunDir = dirname(process.execPath);
+  if (!existsSync(join(bunDir, "claude")) && !existsSync(join(bunDir, "claude.exe"))) {
+    dirs.push(bunDir); // include the interpreter dir only if it does not also ship `claude`
+  }
+  return {
+    PATH: dirs.join(":"),
+    HOME: process.env.HOME ?? tmpdir(),
+    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    ...extra,
+  };
+}
+
+async function runScan(
+  scanArgs: string[],
+  opts: { env?: Record<string, string> } = {},
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  // Launch via the absolute interpreter path; Bun resolves argv[0] against the child PATH,
+  // so a bare "bun" token with a stripped PATH would throw ENOENT before the CLI runs.
+  const proc = Bun.spawn([process.execPath, "run", CLI, "scan", ...scanArgs], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: curatedEnv(opts.env),
+  });
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();
   const code = await proc.exited;
@@ -141,14 +165,79 @@ describe("scan CLI: warnings + message gating", () => {
     }
   }, 30_000);
 
-  test("--no-split --cluster=llm does not falsely claim the claude CLI is missing", async () => {
+  test("--no-split --cluster=llm emits no eager backend notice", async () => {
     const root = makeNestedPlugin({ messaging: 4, voice: 4 });
     try {
       const { stderr, code } = await runScan([root, "--no-split", "--cluster=llm", "--min-skills=2"]);
       expect(code).toBe(0);
       expect(stderr).not.toMatch(/claude/i);
+      expect(stderr).not.toMatch(/no LLM backend/i); // no split happened -> no split notice
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
+});
+
+describe("scan CLI: deterministic-default + decision-B hint", () => {
+  test("auto with CCPLUGINIZER_LLM_CMD set emits the hint and runs no command", async () => {
+    const root = makeNestedPlugin({ messaging: 4, voice: 4 });
+    const sentinel = join(mkdtempSync(join(tmpdir(), "ccp-sent-")), "ran");
+    try {
+      const { stderr, stdout, code } = await runScan(
+        [root, "--cluster=auto", "--min-skills=2"],
+        { env: { CCPLUGINIZER_LLM_CMD: `touch ${sentinel}` } },
+      );
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/auto is deterministic-only/);
+      expect(existsSync(sentinel)).toBe(false); // command never executed under auto
+      expect(Array.isArray(JSON.parse(stdout))).toBe(true); // still a deterministic split
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(dirname(sentinel), { recursive: true, force: true });
+    }
+  });
+
+  test("auto with no LLM config emits no hint", async () => {
+    const root = makeNestedPlugin({ messaging: 4, voice: 4 });
+    try {
+      const { stderr, code } = await runScan([root, "--cluster=auto", "--min-skills=2"]);
+      expect(code).toBe(0);
+      expect(stderr).not.toMatch(/deterministic-only/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scan CLI: --cluster=llm notices", () => {
+  test("no backend + a deterministic split -> (no LLM backend found) notice", async () => {
+    const root = makeNestedPlugin({ messaging: 4, voice: 4 });
+    try {
+      const { stderr, stdout, code } = await runScan([root, "--cluster=llm", "--min-skills=2"]);
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/no LLM backend found/);
+      expect(Array.isArray(JSON.parse(stdout))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("sub-threshold -> no notice at all", async () => {
+    const { stderr, code } = await runScan([join(FIXTURES, "skills-only"), "--cluster=llm"]);
+    expect(code).toBe(0);
+    expect(stderr).not.toMatch(/no LLM backend|produced no split/);
+  });
+
+  test("above threshold but no clean partition + no backend -> produced-no-split notice, single entry", async () => {
+    const root = makeNestedPlugin({ solo: 30 });
+    try {
+      const { stderr, stdout, code } = await runScan([root, "--cluster=llm", "--min-skills=2"]);
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/--cluster=llm produced no split/);
+      expect(stderr).toMatch(/no LLM backend available/);
+      expect(Array.isArray(JSON.parse(stdout))).toBe(false); // single entry
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
