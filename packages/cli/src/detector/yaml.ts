@@ -158,10 +158,12 @@ function collectNested(
   const childIndent = leadingSpaces(firstLine);
 
   // A plain scalar whose value starts on the following line (legal YAML:
-  // `description:\n  Send SMS…`): not a list item and no mapping colon — fold it
-  // like a continuation rather than mis-reading it as an empty map, which would
-  // fail schema validation and silently drop the skill/agent.
-  if (firstTrimmed !== "-" && !firstTrimmed.startsWith("- ") && !firstTrimmed.includes(":")) {
+  // `description:\n  See https://docs… for details`): not a list item and no
+  // mapping colon — fold it like a continuation rather than mis-reading it as a
+  // map, which would fail schema validation and silently drop the skill/agent.
+  // A colon only separates a mapping when followed by whitespace or end-of-line;
+  // the ":" in a URL is part of the scalar.
+  if (firstTrimmed !== "-" && !firstTrimmed.startsWith("- ") && mappingColonIndex(firstTrimmed) === -1) {
     const cont = collectPlainContinuation(lines, peek);
     return { value: cont.lines.join(" "), next: cont.next };
   }
@@ -206,7 +208,7 @@ function collectNested(
     if (leadingSpaces(line) > childIndent) {
       continue; // grandchild of a one-level map — skip; flattening it would overwrite a real sibling key
     }
-    const ci = t.indexOf(":");
+    const ci = mappingColonIndex(t);
     if (ci === -1) {
       continue;
     }
@@ -215,6 +217,16 @@ function collectNested(
     map[k] = val === "" || isBlockScalarIndicator(val) ? null : coerceYamlValue(val);
   }
   return { value: map, next: i };
+}
+
+/** Index of the first ":" that separates a mapping key (followed by space or EOL); -1 if none. */
+function mappingColonIndex(line: string): number {
+  for (let i = line.indexOf(":"); i !== -1; i = line.indexOf(":", i + 1)) {
+    if (i === line.length - 1 || line[i + 1] === " " || line[i + 1] === "\t") {
+      return i;
+    }
+  }
+  return -1;
 }
 
 function coerceYamlValue(raw: string): unknown {

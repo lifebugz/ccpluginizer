@@ -7,8 +7,8 @@ export const validateCommand = new Crust("validate")
     { name: "entryFile", type: "string", required: true, description: "Path to an entry JSON file, a JSON array, or a directory of entries" },
   ] as const)
   .run(({ args }): void => {
-    const items = collectEntries(args.entryFile);
-    const result = validateEntries(items);
+    const { items, sources } = collectEntries(args.entryFile);
+    const result = validateEntries(items, sources);
     if (!result.ok) {
       console.error("Validation failed:");
       for (const error of result.errors) {

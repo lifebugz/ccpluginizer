@@ -1,22 +1,27 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import * as v from "valibot";
-import { MarketplaceEntrySchema } from "../schemas/marketplaceEntry.ts";
+import { MarketplaceEntrySchema, type MarketplaceEntry } from "../schemas/marketplaceEntry.ts";
 import { readJsonFile } from "./fsWalk.ts";
 
 export interface ValidationResult {
   readonly ok: boolean;
   readonly errors: string[];
+  /** Schema-parsed outputs of the valid items (complete only when ok). */
+  readonly entries: MarketplaceEntry[];
 }
 
 /**
  * Validate a list of parsed entries against the schema and enforce cross-entry
  * name uniqueness (the schema cannot check uniqueness on its own — this mirrors
- * `claude plugin validate`'s duplicate-name guard).
+ * `claude plugin validate`'s duplicate-name guard). Pass `sources` so errors name
+ * the offending file instead of a flattened index.
  */
-export function validateEntries(items: readonly unknown[]): ValidationResult {
+export function validateEntries(items: readonly unknown[], sources?: readonly string[]): ValidationResult {
   const errors: string[] = [];
-  const names: string[] = [];
+  const entries: MarketplaceEntry[] = [];
+  const nameSource = new Map<string, string>();
+  const label = (i: number): string => sources?.[i] ?? `entry[${String(i)}]`;
 
   items.forEach((item, i) => {
     const result = v.safeParse(MarketplaceEntrySchema, item);
@@ -29,30 +34,42 @@ export function validateEntries(items: readonly unknown[]): ValidationResult {
           return path === null ? issue.message : `${path}: ${issue.message}`;
         })
         .join("; ");
-      errors.push(`entry[${String(i)}]: ${detail}`);
-    } else {
-      names.push(result.output.name);
+      errors.push(`${label(i)}: ${detail}`);
+      return;
     }
+    const name = result.output.name;
+    const firstSource = nameSource.get(name);
+    if (firstSource !== undefined) {
+      errors.push(`duplicate entry name: ${name} (${label(i)} also declared in ${firstSource})`);
+      return;
+    }
+    nameSource.set(name, label(i));
+    entries.push(result.output);
   });
 
-  const seen = new Set<string>();
-  const reported = new Set<string>();
-  for (const name of names) {
-    if (seen.has(name) && !reported.has(name)) {
-      errors.push(`duplicate entry name: ${name}`);
-      reported.add(name);
-    }
-    seen.add(name);
-  }
+  return { ok: errors.length === 0, errors, entries };
+}
 
-  return { ok: errors.length === 0, errors };
+export interface CollectedEntries {
+  readonly items: unknown[];
+  /** Provenance label per item: the file name, plus [index] for array-shaped files. */
+  readonly sources: string[];
 }
 
 /** Read parsed entries from a file (object or array) or a directory of *.json files. */
-export function collectEntries(path: string): unknown[] {
+export function collectEntries(path: string): CollectedEntries {
   if (!existsSync(path)) {
     throw new Error(`No such file or directory: ${path}`);
   }
+  const items: unknown[] = [];
+  const sources: string[] = [];
+  const add = (parsed: unknown, fileLabel: string): void => {
+    const list = toEntryList(parsed);
+    list.forEach((item, i) => {
+      items.push(item);
+      sources.push(list.length > 1 ? `${fileLabel}[${String(i)}]` : fileLabel);
+    });
+  };
   if (statSync(path).isDirectory()) {
     const files = readdirSync(path)
       .filter((f) => f.endsWith(".json"))
@@ -65,17 +82,17 @@ export function collectEntries(path: string): unknown[] {
     // Flatten array-shaped files the same way the single-file branch does, so a
     // multi-entry array dropped into the directory validates entry-by-entry rather
     // than being mis-parsed as one (non-conforming) array element.
-    return rejectEmpty(files.flatMap((f) => toEntryList(readJsonFile(join(path, f)))), path);
+    for (const f of files) {
+      add(readJsonFile(join(path, f)), f);
+    }
+  } else {
+    add(readJsonFile(path), basename(path));
   }
-  return rejectEmpty(toEntryList(readJsonFile(path)), path);
-}
-
-/** A `[]` file (or a directory of them) is a truncated artifact, not a valid catalog. */
-function rejectEmpty(items: unknown[], path: string): unknown[] {
+  // A `[]` file (or a directory of them) is a truncated artifact, not a valid catalog.
   if (items.length === 0) {
     throw new Error(`No entries found in: ${path}`);
   }
-  return items;
+  return { items, sources };
 }
 
 /** A parsed JSON file is either a single entry or an array of entries. */

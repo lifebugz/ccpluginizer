@@ -261,28 +261,28 @@ describe("partitionSkills: orchestrator", () => {
 describe("partitionSkills: marker staleness and path conventions", () => {
   test("a fully-stale marker is ignored (falls back to the cascade) and warns", async () => {
     const skills = telnyxLike();
-    const { result } = await partitionSkills(skills, {
+    const { result, warnings } = await partitionSkills(skills, {
       strategy: "auto",
       markerGroups: [{ slug: "old", skills: ["./gone-a/", "./gone-b/"] }],
     });
     expect(result?.strategy).toBe("metadata"); // not "marker" — the bogus freeze did not win
-    expect(result?.warnings?.some((w) => w.includes("ignoring the frozen split"))).toBe(true);
+    expect(warnings.some((w) => w.includes("ignoring the frozen split"))).toBe(true);
   });
 
   test("a partially-stale marker buckets unlisted skills into misc and warns", async () => {
     const skills = [mk("a0", "a"), mk("a1", "a"), mk("b0", "b"), mk("b1", "b")];
-    const { result } = await partitionSkills(skills, {
+    const { result, warnings } = await partitionSkills(skills, {
       markerGroups: [{ slug: "alpha", skills: ["./a0/", "./a1/"] }],
     });
     expect(result?.strategy).toBe("marker");
     const misc = result?.groups.find((g) => g.slug === "misc");
     expect(misc?.skills.map((s) => s.dir)).toEqual(["b0", "b1"]);
-    expect(result?.warnings?.some((w) => w.includes("misc"))).toBe(true);
+    expect(warnings.some((w) => w.includes("misc"))).toBe(true);
   });
 
   test("a skill path listed in two marker groups warns (first occurrence wins)", async () => {
     const skills = [mk("a0", "a"), mk("a1", "a"), mk("b0", "b")];
-    const { result } = await partitionSkills(skills, {
+    const { result, warnings } = await partitionSkills(skills, {
       markerGroups: [
         { slug: "one", skills: ["./a0/", "./a1/"] },
         { slug: "two", skills: ["./a0/", "./b0/"] },
@@ -291,12 +291,12 @@ describe("partitionSkills: marker staleness and path conventions", () => {
     expect(result?.strategy).toBe("marker");
     expect(result?.groups.find((g) => g.slug === "one")?.skills.map((s) => s.dir)).toEqual(["a0", "a1"]);
     expect(result?.groups.find((g) => g.slug === "two")?.skills.map((s) => s.dir)).toEqual(["b0"]);
-    expect(result?.warnings?.some((w) => w.includes("more than one group"))).toBe(true);
+    expect(warnings.some((w) => w.includes("more than one group"))).toBe(true);
   });
 
   test("repo-root-relative marker paths resolve via their final segment", async () => {
     const skills = [mk("voice-a", "voice"), mk("msg-a", "messaging")];
-    const { result } = await partitionSkills(skills, {
+    const { result, warnings } = await partitionSkills(skills, {
       markerGroups: [
         { slug: "voice", skills: ["./providers/claude/plugin/skills/voice-a/"] },
         { slug: "messaging", skills: ["./providers/claude/plugin/skills/msg-a/"] },
@@ -304,6 +304,6 @@ describe("partitionSkills: marker staleness and path conventions", () => {
     });
     expect(result?.strategy).toBe("marker");
     expect(result?.groups.length).toBe(2);
-    expect(result?.warnings ?? []).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 });

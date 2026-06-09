@@ -1,13 +1,8 @@
 import { join } from "node:path";
 import * as v from "valibot";
 import { SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
-import {
-  dirContainsFile,
-  makeDirLister,
-  readFrontmatter,
-  type DirLister,
-  type FrontmatterReader,
-} from "./fsWalk.ts";
+import { dirContainsFile, makeDirLister, type DirLister } from "./fsWalk.ts";
+import { readFrontmatter, type FrontmatterReader } from "./frontmatterIo.ts";
 
 /** One skill's clustering-relevant metadata, plus its container-relative path. */
 export interface SkillMeta {

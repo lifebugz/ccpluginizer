@@ -1,15 +1,20 @@
 import { Crust } from "@crustjs/core";
 import { confirm } from "@crustjs/prompts";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveSource, inferSourceRepo, parseSourceInput } from "../sources/index.ts";
 import {
+  DEFAULT_MIN_SKILLS_TO_SPLIT,
+  sourceRepoUrl,
   synthesizeEntries,
   type MarkerDraft,
   type SynthesizeEntriesResult,
 } from "../detector/synthesize.ts";
+import { readJsonFile } from "../detector/fsWalk.ts";
 import {
   CLUSTER_STRATEGIES,
+  DEFAULT_STRATEGY,
+  strategyUsesLlm,
   type ClusterStrategy,
   type GroupSkillsFn,
   type LlmOutcome,
@@ -27,12 +32,12 @@ export const scanCommand = new Crust("scan")
     outDir: { type: "string", aliases: ["out-dir"], description: "Write one JSON file per entry into this directory" },
     split: { type: "boolean", default: true, description: "Auto-split bloated plugins (use --no-split to force one entry)" },
     umbrella: { type: "boolean", default: false, description: "Also emit the everything-in-one umbrella entry" },
-    cluster: { type: "string", default: "auto", description: "Clustering strategy: auto (deterministic, default) | auto-llm (deterministic, then BYO LLM on no clean partition) | llm (opt-in BYO subprocess/claude) | metadata | directory | name-prefix" },
+    cluster: { type: "string", default: DEFAULT_STRATEGY, description: "Clustering strategy: auto (deterministic, default) | auto-llm (deterministic, then BYO LLM on no clean partition) | llm (opt-in BYO subprocess/claude) | metadata | directory | name-prefix" },
     llmCmd: { type: "string", aliases: ["llm-cmd"], description: "BYO LLM grouper command (prompt on stdin, JSON groups on stdout); used by --cluster=llm/auto-llm" },
     llmTimeout: { type: "number", aliases: ["llm-timeout"], description: "LLM backend timeout in seconds (default 120)" },
     writeMarker: { type: "boolean", default: false, aliases: ["write-marker"], description: "Freeze the grouping into .ccpluginizer.json" },
     interactive: { type: "boolean", default: false, description: "Review the proposed split before emitting" },
-    minSkills: { type: "number", default: 25, aliases: ["min-skills"], description: "Minimum skill count to attempt a split" },
+    minSkills: { type: "number", default: DEFAULT_MIN_SKILLS_TO_SPLIT, aliases: ["min-skills"], description: "Minimum skill count to attempt a split" },
   })
   .run(async ({ args, flags }): Promise<void> => {
     const repoPath = await resolveSource(args.repo);
@@ -40,6 +45,14 @@ export const scanCommand = new Crust("scan")
 
     const requestedCluster = normalizeStrategy(flags.cluster);
     const wantSplit = flags.split;
+    if (!wantSplit && flags.umbrella) {
+      console.error("ccpluginizer: --umbrella is ignored with --no-split (the umbrella only exists on the split path).");
+    }
+    const minSkills =
+      Number.isFinite(flags.minSkills) && flags.minSkills >= 0 ? flags.minSkills : DEFAULT_MIN_SKILLS_TO_SPLIT;
+    if (minSkills !== flags.minSkills) {
+      console.error(`ccpluginizer: invalid --min-skills ${String(flags.minSkills)}; using ${String(DEFAULT_MIN_SKILLS_TO_SPLIT)}.`);
+    }
     const llmConfig = resolveLlmConfig({
       ...(flags.llmCmd !== undefined ? { llmCmd: flags.llmCmd } : {}),
       ...(flags.llmTimeout !== undefined ? { llmTimeout: flags.llmTimeout } : {}),
@@ -48,19 +61,7 @@ export const scanCommand = new Crust("scan")
     // partition actually invokes the grouper — marker wins, deterministic wins, and
     // sub-threshold scans never pay for it.
     const group: GroupSkillsFn | null =
-      wantSplit && (requestedCluster === "llm" || requestedCluster === "auto-llm")
-        ? makeLazyGrouper(llmConfig)
-        : null;
-
-    // Decision B: an explicitly-configured LLM command is ignored under deterministic
-    // `auto` (NOT auto-llm, which uses it as a rescue; NOT merely because `claude` is
-    // on PATH). Only worth saying when a split could actually have used it.
-    if (wantSplit && requestedCluster === "auto" && llmConfig.cmd !== undefined) {
-      const source = llmConfig.cmdFromEnv ? "CCPLUGINIZER_LLM_CMD" : "--llm-cmd";
-      console.error(
-        `ccpluginizer: an LLM is configured (${source}) but auto is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
-      );
-    }
+      wantSplit && strategyUsesLlm(requestedCluster) ? makeLazyGrouper(llmConfig) : null;
 
     let result = await synthesizeEntries({
       repoRoot: repoPath,
@@ -68,16 +69,29 @@ export const scanCommand = new Crust("scan")
       split: wantSplit,
       umbrella: flags.umbrella,
       strategy: requestedCluster,
-      minSkillsToSplit: flags.minSkills,
+      minSkillsToSplit: minSkills,
       ...(group !== null ? { group } : {}),
     });
+
+    // Decision B: an explicitly-configured LLM command is ignored under deterministic
+    // `auto` (NOT auto-llm, which uses it as a rescue; NOT merely because `claude` is
+    // on PATH). Only worth saying when this scan's split could actually have used it —
+    // sub-threshold and marker-frozen runs never consult any strategy.
+    const splitCouldHaveUsedLlm =
+      (result.split !== null && result.split.strategy !== "marker") || result.splitAttemptedButEmpty;
+    if (wantSplit && requestedCluster === "auto" && llmConfig.cmd !== undefined && splitCouldHaveUsedLlm) {
+      const source = llmConfig.cmdFromEnv ? "CCPLUGINIZER_LLM_CMD" : "--llm-cmd";
+      console.error(
+        `ccpluginizer: an LLM is configured (${source}) but auto is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
+      );
+    }
 
     if (flags.interactive && result.split !== null) {
       result = await reviewSplit(result, { repoPath, sourceRepo });
     }
 
     if (result.split !== null) {
-      printSplitNotice(result, result.llm);
+      printSplitNotice(result);
     } else if (result.splitAttemptedButEmpty && result.llm.step !== "not-invoked") {
       printNoSplitNotice(requestedCluster, result.llm);
     }
@@ -110,8 +124,9 @@ function normalizeStrategy(value: string): ClusterStrategy {
   if ((CLUSTER_STRATEGIES as readonly string[]).includes(value)) {
     return value as ClusterStrategy;
   }
-  console.error(`ccpluginizer: unknown --cluster "${value}"; using auto.`);
-  return "auto";
+  // A typo like --cluster=auot must fail loudly: silently degrading to auto would
+  // disable the LLM rescue the user explicitly asked for.
+  throw new Error(`unknown --cluster "${value}"; expected one of: ${CLUSTER_STRATEGIES.join(", ")}`);
 }
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
@@ -177,8 +192,9 @@ function describeStrategy(strategy: ResolvedStrategy, llm: LlmOutcome): string {
   if (strategy === "marker") {
     return "via committed marker (.ccpluginizer.json)";
   }
-  if (strategy === "llm") {
-    return `via ${llm.step === "won" ? llm.kind : "subprocess"} clustering`;
+  // strategy "llm" and a won outcome always coincide — the orchestrator reports both.
+  if (llm.step === "won") {
+    return `via ${llm.kind} clustering`;
   }
   if (llm.step === "not-invoked") {
     return `via ${strategy} clustering`;
@@ -199,10 +215,11 @@ function llmFailureReason(llm: LlmOutcome): string {
   return "no LLM backend found; set --llm-cmd or install the `claude` CLI";
 }
 
-export function printSplitNotice(result: SynthesizeEntriesResult, llm: LlmOutcome): void {
+export function printSplitNotice(result: SynthesizeEntriesResult): void {
   if (result.split === null) {
     return;
   }
+  const llm = result.llm;
   const slices = result.split.groupCount;
   const parts = [`${String(slices)} skill slice${slices === 1 ? "" : "s"}`];
   if (result.marker?.core === true) {
@@ -336,13 +353,13 @@ function warnAboutStaleEntries(
     return;
   }
   const current = new Set(entries.map((e) => `${e.name}.json`));
-  const expectedUrl = `https://github.com/${sourceRepo}.git`;
+  const expectedUrl = sourceRepoUrl(sourceRepo);
   const stale = readdirSync(outDir)
     .filter((f) => f.endsWith(".json") && !current.has(f))
     .filter((f) => f === `${basePrefix}.json` || f.startsWith(`${basePrefix}-`))
     .filter((f) => {
       try {
-        return entryReferencesUrl(JSON.parse(readFileSync(join(outDir, f), "utf8")), expectedUrl);
+        return entryReferencesUrl(readJsonFile(join(outDir, f)), expectedUrl);
       } catch {
         return false; // unreadable/foreign file — not provably ours, stay quiet
       }

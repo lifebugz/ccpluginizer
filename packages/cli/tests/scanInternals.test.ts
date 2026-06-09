@@ -1,4 +1,4 @@
-import { describe, expect, test, spyOn } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import {
   resolveLlmConfig,
@@ -10,6 +10,7 @@ import {
 import type { ResolvedGrouper } from "../src/commands/llmGrouper.ts";
 import type { LlmOutcome } from "../src/detector/partition.ts";
 import type { SynthesizeEntriesResult } from "../src/detector/synthesize.ts";
+import { captureStderr as capture } from "./helpers.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
 
@@ -38,15 +39,7 @@ function splitResult(
   };
 }
 
-function capture(fn: () => void): string {
-  const spy = spyOn(console, "error").mockImplementation(() => undefined);
-  try {
-    fn();
-    return spy.mock.calls.map((c) => c.map((a) => String(a)).join(" ")).join("\n");
-  } finally {
-    spy.mockRestore();
-  }
-}
+
 
 describe("resolveLlmConfig", () => {
   test("flag wins over env per setting", () => {
@@ -88,29 +81,29 @@ describe("resolveLlmConfig", () => {
 
 describe("printSplitNotice taxonomy", () => {
   test("marker -> committed-marker line, no LLM/deterministic qualifier", () => {
-    const out = capture(() => { printSplitNotice(splitResult("marker"), NOT_INVOKED); });
+    const out = capture(() => { printSplitNotice(splitResult("marker")); });
     expect(out).toContain("via committed marker (.ccpluginizer.json)");
     expect(out).not.toMatch(/LLM backend/);
   });
 
   test("llm result names the backend kind", () => {
-    expect(capture(() => { printSplitNotice(splitResult("llm"), { step: "won", kind: "subprocess" }); }))
+    expect(capture(() => { printSplitNotice(splitResult("llm", { step: "won", kind: "subprocess" })); }))
       .toContain("via subprocess clustering");
-    expect(capture(() => { printSplitNotice(splitResult("llm"), { step: "won", kind: "claude" }); }))
+    expect(capture(() => { printSplitNotice(splitResult("llm", { step: "won", kind: "claude" })); }))
       .toContain("via claude clustering");
   });
 
   test("deterministic after a failed LLM step reports the exact reason", () => {
-    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), NO_OUTPUT); }))
+    expect(capture(() => { printSplitNotice(splitResult("name-prefix", NO_OUTPUT)); }))
       .toContain("(the LLM backend was unreachable or produced no output)");
-    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), GATE_REJECTED); }))
+    expect(capture(() => { printSplitNotice(splitResult("name-prefix", GATE_REJECTED)); }))
       .toContain("(the LLM grouping was rejected by the acceptance gate)");
-    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), NO_BACKEND); }))
+    expect(capture(() => { printSplitNotice(splitResult("name-prefix", NO_BACKEND)); }))
       .toContain("(no LLM backend found; set --llm-cmd or install the `claude` CLI)");
   });
 
   test("deterministic with the LLM never invoked -> plain notice, no LLM mention", () => {
-    const out = capture(() => { printSplitNotice(splitResult("metadata"), NOT_INVOKED); });
+    const out = capture(() => { printSplitNotice(splitResult("metadata")); });
     expect(out).toContain("via metadata clustering");
     expect(out).not.toMatch(/LLM/);
     expect(out).not.toMatch(/clustering \(/); // no parenthesized fallback reason

@@ -92,19 +92,34 @@ describe("resolveSourceLayout: filesystem robustness", () => {
 });
 
 describe("resolveSourceLayout: MCP robustness", () => {
-  test("falls through a malformed higher-priority .mcp.json to a valid one", () => {
+  test("falls through a malformed higher-priority .mcp.json to a valid anchored one", () => {
     const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-fallthrough-"));
     try {
-      // Root .mcp.json (shallowest → chosen first) is malformed; the valid one is deeper.
+      // Root .mcp.json (shallowest → chosen first) is malformed; the valid one sits
+      // in the other anchored location, .claude/.
       writeFileSync(join(tmp, ".mcp.json"), "{ not valid json");
-      mkdirSync(join(tmp, "sub"), { recursive: true });
+      mkdirSync(join(tmp, ".claude"), { recursive: true });
       writeFileSync(
-        join(tmp, "sub", ".mcp.json"),
+        join(tmp, ".claude", ".mcp.json"),
         JSON.stringify({ mcpServers: { telnyx: { type: "http", url: "https://x" } } }),
       );
       const layout = resolveSourceLayout(tmp);
-      expect(layout.mcp?.relPath).toBe("sub/.mcp.json");
+      expect(layout.mcp?.relPath).toBe(".claude/.mcp.json");
       expect(layout.mcp?.serverType).toBe("remote");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("a stray example .mcp.json outside anchored locations is never inlined", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-stray-"));
+    try {
+      mkdirSync(join(tmp, "examples", "local-server"), { recursive: true });
+      writeFileSync(
+        join(tmp, "examples", "local-server", ".mcp.json"),
+        JSON.stringify({ mcpServers: { demo: { command: "node", args: ["./server.js"] } } }),
+      );
+      expect(resolveSourceLayout(tmp).mcp).toBeNull();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -125,6 +140,66 @@ describe("resolveSourceLayout: MCP robustness", () => {
     try {
       writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ mcpServers: [{ command: "x" }] }));
       expect(resolveSourceLayout(tmp).mcp).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveSourceLayout: classification edges", () => {
+  test("generic env interpolation (API keys) does not classify a server repo-local", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-env-"));
+    try {
+      writeFileSync(
+        join(tmp, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            scoped: { command: "npx", args: ["-y", "@scope/mcp", "--header", "Authorization: ${API_KEY}"] },
+          },
+        }),
+      );
+      expect(resolveSourceLayout(tmp).mcp?.serverType).toBe("package");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("CLAUDE_PLUGIN_ROOT expansion still classifies a server repo-local", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-root-"));
+    try {
+      writeFileSync(
+        join(tmp, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { local: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server.js"] } },
+        }),
+      );
+      expect(resolveSourceLayout(tmp).mcp?.serverType).toBe("repo-local");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("a src/commands code directory is not reported as a commands artifact", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-srccmd-"));
+    try {
+      mkdirSync(join(tmp, "src", "commands"), { recursive: true });
+      writeFileSync(join(tmp, "src", "commands", "scan.ts"), "// code");
+      mkdirSync(join(tmp, "skills", "a"), { recursive: true });
+      writeFileSync(join(tmp, "skills", "a", "SKILL.md"), "---\ndescription: a.\n---\n");
+      const layout = resolveSourceLayout(tmp);
+      expect(layout.artifacts.find((a) => a.kind === "commands")).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("a root-level commands directory IS reported as an artifact", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-rootcmd-"));
+    try {
+      mkdirSync(join(tmp, "commands"), { recursive: true });
+      writeFileSync(join(tmp, "commands", "do.md"), "---\ndescription: Do.\n---\n");
+      const layout = resolveSourceLayout(tmp);
+      expect(layout.artifacts.find((a) => a.kind === "commands")?.relPath).toBe("commands");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

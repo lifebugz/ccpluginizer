@@ -1,7 +1,8 @@
 import { dirname, relative } from "node:path";
 import * as v from "valibot";
 import { SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
-import { isAgentFile, readFrontmatter, walkTree, type DirLister, type FrontmatterReader } from "./fsWalk.ts";
+import { walkTree, type DirLister } from "./fsWalk.ts";
+import { isAgentFile, readFrontmatter, type FrontmatterReader } from "./frontmatterIo.ts";
 import type { Finding } from "./types.ts";
 
 // Sniffing is the last-resort detection layer, so it looks everywhere except

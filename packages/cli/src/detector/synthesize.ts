@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { checkMarketplaceGuard } from "./marketplaceGuard.ts";
 import { detectMarkerFile, isFreezeOnlyMarker, markerSuppressesSplit } from "./markerFile.ts";
 import { detectConventions } from "./conventions.ts";
@@ -7,6 +9,7 @@ import { normalizePathsAgainstRepo } from "./normalize.ts";
 import { createLayoutResolver, type ContainerRef, type SourceLayout } from "./sourceLayout.ts";
 import { enumerateSkills } from "./skillMeta.ts";
 import {
+  DEFAULT_STRATEGY,
   partitionSkills,
   type ClusterStrategy,
   type GroupSkillsFn,
@@ -26,7 +29,7 @@ export interface SynthesizeInput {
 }
 
 /** Default threshold: only attempt a split when a repo has at least this many skills. */
-const DEFAULT_MIN_SKILLS_TO_SPLIT = 25;
+export const DEFAULT_MIN_SKILLS_TO_SPLIT = 25;
 
 const LLM_NOT_INVOKED: LlmOutcome = { step: "not-invoked" };
 
@@ -89,9 +92,8 @@ export async function synthesizeEntries(
     wantSplit && (marker === null || !markerSuppressesSplit(marker))
       ? await attemptSplit(input, marker)
       : null;
-  const fulfilled = attempt?.fulfilled ?? null;
-  if (fulfilled !== null) {
-    return fulfilled;
+  if (attempt !== null && attempt.fulfilled !== null) {
+    return attempt.fulfilled;
   }
 
   // Fall through: a single entry, identical to today. The guard runs here (not at
@@ -109,16 +111,17 @@ export async function synthesizeEntries(
   };
 }
 
-interface SplitAttempt {
-  /** Set when the split fired; the complete result. */
-  readonly fulfilled: SynthesizeEntriesResult | null;
-  /** True when partitionSkills ran and found no acceptable grouping. */
-  readonly attemptedButEmpty: boolean;
-  readonly llm: LlmOutcome;
-  readonly warnings: string[];
-  /** Walk/parse caches, reusable by the fall-through detection. */
-  readonly caches: SniffCaches;
-}
+type SplitAttempt =
+  /** The split fired; the complete result. */
+  | { readonly fulfilled: SynthesizeEntriesResult }
+  /** No split: what happened, plus walk/parse caches reusable by the fall-through. */
+  | {
+      readonly fulfilled: null;
+      readonly attemptedButEmpty: boolean;
+      readonly llm: LlmOutcome;
+      readonly warnings: string[];
+      readonly caches: SniffCaches;
+    };
 
 async function attemptSplit(
   input: SynthesizeEntriesInput,
@@ -127,19 +130,27 @@ async function attemptSplit(
   const minSkills = input.minSkillsToSplit ?? DEFAULT_MIN_SKILLS_TO_SPLIT;
   // Two-phase layout: only the skills container is resolved up front; the rest
   // (agents/mcp/pluginRoot/artifacts) resolves after the partition succeeds, so
-  // sub-threshold scans never pay for a repo-wide .md parse.
-  const resolver = createLayoutResolver(input.repoRoot);
+  // sub-threshold scans never pay for a repo-wide .md parse. Permission-skipped
+  // paths are collected so an incomplete detection is never silent.
+  const skippedPaths: string[] = [];
+  const resolver = createLayoutResolver(input.repoRoot, { onSkip: (p) => skippedPaths.push(p) });
   const caches: SniffCaches = { list: resolver.list, readFrontmatter: resolver.readFrontmatter };
+  const skipWarnings = (): string[] =>
+    skippedPaths.length > 0
+      ? [
+          `${String(skippedPaths.length)} unreadable path(s) were skipped during detection (permission denied), e.g. "${skippedPaths[0] ?? ""}" — the emitted entries may be incomplete.`,
+        ]
+      : [];
   const none = (attemptedButEmpty: boolean, llm: LlmOutcome, warnings: string[]): SplitAttempt => ({
     fulfilled: null,
     attemptedButEmpty,
     llm,
-    warnings,
+    warnings: [...warnings, ...skipWarnings()],
     caches,
   });
 
+  const frozen = marker !== null && !markerSuppressesSplit(marker);
   const markerGroups = marker?.groups;
-  const frozen = markerGroups !== undefined && markerGroups.length > 0;
   if (resolver.skillsContainer === null) {
     return none(
       false,
@@ -154,20 +165,29 @@ async function attemptSplit(
   if (!frozen && skills.length < minSkills) {
     return none(false, LLM_NOT_INVOKED, []);
   }
+  // SKILL.md dirs the container scored but enumeration could not parse would vanish
+  // from every slice — the one dropped-content class with no other warning channel.
+  const unparsed = resolver.skillDirCount - skills.length;
+  const unparsedWarnings =
+    unparsed > 0
+      ? [
+          `${String(unparsed)} skill ${unparsed === 1 ? "directory" : "directories"} inside "${resolver.skillsContainer.relPath}" ${unparsed === 1 ? "has" : "have"} missing or invalid SKILL.md frontmatter and ${unparsed === 1 ? "is" : "are"} not covered by any emitted slice; fix the frontmatter or use --no-split for a single entry that carries the whole directory.`,
+        ]
+      : [];
 
-  const { result, llm } = await partitionSkills(skills, {
-    strategy: input.strategy ?? "auto",
-    ...(frozen ? { markerGroups } : {}),
+  const { result, llm, warnings: partitionWarnings } = await partitionSkills(skills, {
+    strategy: input.strategy ?? DEFAULT_STRATEGY,
+    ...(frozen && markerGroups !== undefined ? { markerGroups } : {}),
     ...(input.group !== undefined ? { group: input.group } : {}),
   });
   if (result === null) {
-    return none(
-      true,
-      llm,
-      frozen
-        ? ['the committed .ccpluginizer.json "groups" matched no skill directory and no fallback partition was found; emitting a single entry — re-run scan --write-marker to refresh the frozen split.']
-        : [],
-    );
+    return none(true, llm, [...partitionWarnings, ...unparsedWarnings]);
+  }
+  // A fully-stale marker authorized the attempt but was then ignored by the
+  // partition layer; without it, this repo never cleared the min-skills gate —
+  // honor the threshold rather than emit a split nobody asked for.
+  if (frozen && result.strategy !== "marker" && skills.length < minSkills) {
+    return none(false, llm, [...partitionWarnings, ...unparsedWarnings]);
   }
 
   const layout = resolver.full();
@@ -183,6 +203,13 @@ async function attemptSplit(
       ...(marker?.name !== undefined ? { markerName: marker.name } : {}),
     },
   );
+  // Re-curating a repo that already publishes a marketplace is deliberate (the
+  // split adds value the existing catalog lacks) but must never be silent.
+  const recurationWarnings = existsSync(join(input.repoRoot, ".claude-plugin", "marketplace.json"))
+    ? [
+        'this repo already publishes a marketplace (.claude-plugin/marketplace.json); the split re-curates it. Install via `/plugin marketplace add` instead if you just want the existing catalog.',
+      ]
+    : [];
   return {
     fulfilled: {
       entries,
@@ -190,16 +217,15 @@ async function attemptSplit(
       marker: markerDraft,
       existingMarker: marker,
       warnings: [
-        ...(result.warnings ?? []),
+        ...partitionWarnings,
+        ...unparsedWarnings,
+        ...recurationWarnings,
         ...collectSplitWarnings(layout, input.sourceRepo, markerDraft.core, markerDraft.umbrella, agentsDropped),
+        ...skipWarnings(),
       ],
       splitAttemptedButEmpty: false,
       llm,
     },
-    attemptedButEmpty: false,
-    llm,
-    warnings: [],
-    caches,
   };
 }
 
@@ -461,12 +487,17 @@ function groupByKind(findings: readonly Finding[]): Map<ComponentKind, Finding[]
   return map;
 }
 
+/** The canonical git URL every emitted entry references for a given source repo. */
+export function sourceRepoUrl(repo: string): string {
+  return `https://github.com/${repo}.git`;
+}
+
 function makeGithubSource(repo: string): Source {
-  return { source: "url", url: `https://github.com/${repo}.git` };
+  return { source: "url", url: sourceRepoUrl(repo) };
 }
 
 function makeGitSubdirSource(repo: string, path: string): Source {
-  return { source: "git-subdir", url: `https://github.com/${repo}.git`, path };
+  return { source: "git-subdir", url: sourceRepoUrl(repo), path };
 }
 
 function defaultEntryName(sourceRepo: string): string {

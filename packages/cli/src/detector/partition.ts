@@ -1,6 +1,6 @@
+import { basename } from "node:path";
 import * as v from "valibot";
 import { byCodeUnit, slugify, stripCommonPrefix, uniqueSlugs } from "./slugify.ts";
-import { lastPathSegment } from "./fsWalk.ts";
 import { RawGroupSchema, type RawGroup } from "../schemas/rawGroups.ts";
 import type { SkillMeta } from "./skillMeta.ts";
 
@@ -18,6 +18,13 @@ export type Grouping = SkillGroup[];
  */
 export const CLUSTER_STRATEGIES = ["auto", "auto-llm", "llm", "metadata", "directory", "name-prefix"] as const;
 export type ClusterStrategy = (typeof CLUSTER_STRATEGIES)[number];
+
+export const DEFAULT_STRATEGY: ClusterStrategy = "auto";
+
+/** Does this strategy ever consult the injected LLM grouper? */
+export function strategyUsesLlm(strategy: ClusterStrategy): boolean {
+  return strategy === "llm" || strategy === "auto-llm";
+}
 /** Strategy actually used to produce a result. */
 export type ResolvedStrategy = "marker" | "llm" | "metadata" | "directory" | "name-prefix";
 
@@ -43,13 +50,13 @@ export type LlmOutcome =
 export interface PartitionResult {
   readonly strategy: ResolvedStrategy;
   readonly groups: Grouping;
-  /** Advisory messages (e.g. stale committed-marker paths) for the caller to surface. */
-  readonly warnings?: readonly string[];
 }
 
 export interface PartitionOutcome {
   readonly result: PartitionResult | null;
   readonly llm: LlmOutcome;
+  /** Advisory messages (e.g. stale committed-marker paths) — surfaced even when result is null. */
+  readonly warnings: readonly string[];
 }
 
 /** A frozen group from a committed marker file: skill *paths* (e.g. "./foo/"). */
@@ -313,7 +320,7 @@ function matchMarkerGroups(
     const gs: SkillMeta[] = [];
     for (const p of mg.skills) {
       const norm = normalizePath(p);
-      const s = byPath.get(norm) ?? byDir.get(lastPathSegment(norm));
+      const s = byPath.get(norm) ?? byDir.get(basename(norm));
       if (s === undefined) {
         unmatched.push(p);
         continue;
@@ -370,14 +377,10 @@ export async function partitionSkills(
   skills: readonly SkillMeta[],
   options: PartitionOptions = {},
 ): Promise<PartitionOutcome> {
-  const strategy = options.strategy ?? "auto";
+  const strategy = options.strategy ?? DEFAULT_STRATEGY;
   const warnings: string[] = [];
   let llm: LlmOutcome = { step: "not-invoked" };
-  const finish = (r: PartitionResult | null): PartitionOutcome => ({
-    result:
-      r === null || warnings.length === 0 ? r : { ...r, warnings: [...(r.warnings ?? []), ...warnings] },
-    llm,
-  });
+  const finish = (result: PartitionResult | null): PartitionOutcome => ({ result, llm, warnings });
 
   // A committed marker grouping wins verbatim — but only when it actually matches.
   if (options.markerGroups !== undefined && options.markerGroups.length > 0) {

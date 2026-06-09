@@ -1,8 +1,6 @@
 #!/usr/bin/env bun
 import { readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import * as v from "valibot";
-import { MarketplaceEntrySchema } from "../packages/cli/src/schemas/marketplaceEntry.ts";
 import { collectEntries, validateEntries } from "../packages/cli/src/detector/validateEntries.ts";
 import { byCodeUnit } from "../packages/cli/src/detector/slugify.ts";
 
@@ -25,10 +23,13 @@ const tombstoned = new Set(
 );
 
 // Same loader + validator as `ccpluginizer validate`: flattens array-shaped entry
-// files (a split scan emits several entries per file) and enforces cross-entry
-// name uniqueness across the whole catalog.
-const items = collectEntries(ENTRIES_DIR);
-const check = validateEntries(items);
+// files (a split scan emits several entries per file), enforces cross-entry name
+// uniqueness, and names the offending file in every error. An entries/ dir with no
+// files (e.g. the last entry just moved to tombstones/) builds an empty catalog —
+// collectEntries' strict-empty guard exists for `validate <wrong-path>`, not here.
+const entryFiles = readdirSync(ENTRIES_DIR).filter((f) => f.endsWith(".json"));
+const { items, sources } = entryFiles.length === 0 ? { items: [], sources: [] } : collectEntries(ENTRIES_DIR);
+const check = validateEntries(items, sources);
 if (!check.ok) {
   console.error("Invalid entries:");
   for (const error of check.errors) {
@@ -37,8 +38,7 @@ if (!check.ok) {
   process.exit(1);
 }
 
-const entries = items
-  .map((item) => v.parse(MarketplaceEntrySchema, item))
+const entries = check.entries
   .filter((e) => !tombstoned.has(e.name))
   .sort((a, b) => byCodeUnit(a.name, b.name));
 

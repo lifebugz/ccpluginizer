@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -15,14 +16,14 @@ export interface SpawnResult {
   readonly error?: Error;
   readonly signal: NodeJS.Signals | null;
   readonly status: number | null;
-  readonly stdout: unknown;
+  readonly stdout: string | null;
 }
 
 /** The runner seam the backends depend on (so tests can fake it with a sync value). */
 export type SpawnRun = (
   command: string,
   args: readonly string[],
-  options: { encoding: "utf8"; input?: string; maxBuffer: number; timeout: number },
+  options: { input?: string; maxBuffer: number; timeout: number },
 ) => SpawnResult | Promise<SpawnResult>;
 
 /** A backend's grouping function — the resolved backend IS the kind, so it returns raw groups. */
@@ -166,7 +167,7 @@ export function validateRawGroups(parsed: unknown): RawGroup[] | null {
 function spawnGroupRun(
   command: string,
   args: readonly string[],
-  options: { encoding: "utf8"; input?: string; maxBuffer: number; timeout: number },
+  options: { input?: string; maxBuffer: number; timeout: number },
 ): Promise<SpawnResult> {
   return new Promise((resolve) => {
     const win = process.platform === "win32";
@@ -182,12 +183,18 @@ function spawnGroupRun(
       return;
     }
     let stdout = "";
+    let stdoutBytes = 0;
     let timedOut = false;
     let overflowed = false;
+    let settled = false;
+    const timers: NodeJS.Timeout[] = [];
     const killTree = (sig: NodeJS.Signals): void => {
       try {
         if (!win && child.pid !== undefined) {
           process.kill(-child.pid, sig); // negative pid: the whole process group
+        } else if (win && child.pid !== undefined) {
+          // child.kill only reaches the cmd.exe wrapper; taskkill /T fells the tree.
+          spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
         } else {
           child.kill(sig);
         }
@@ -199,37 +206,86 @@ function spawnGroupRun(
         }
       }
     };
-    const timer = setTimeout(() => {
+    // A detached child is outside the terminal's foreground group, so Ctrl-C /
+    // terminal close / process.exit would orphan a running backend — forward them.
+    const forward = (sig: NodeJS.Signals) => (): void => {
+      killTree(sig);
+      cleanupForwarders();
+      process.kill(process.pid, sig);
+    };
+    const onSigint = forward("SIGINT");
+    const onSighup = forward("SIGHUP");
+    const onSigterm = forward("SIGTERM");
+    const onExit = (): void => {
+      killTree("SIGKILL");
+    };
+    const cleanupForwarders = (): void => {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGHUP", onSighup);
+      process.removeListener("SIGTERM", onSigterm);
+      process.removeListener("exit", onExit);
+    };
+    process.once("SIGINT", onSigint);
+    process.once("SIGHUP", onSighup);
+    process.once("SIGTERM", onSigterm);
+    process.on("exit", onExit);
+    const finish = (result: SpawnResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      for (const t of timers) {
+        clearTimeout(t);
+      }
+      cleanupForwarders();
+      resolve(result);
+    };
+    const schedule = (fn: () => void, ms: number): void => {
+      const t = setTimeout(fn, ms);
+      t.unref();
+      timers.push(t);
+    };
+    schedule(() => {
       timedOut = true;
       killTree("SIGTERM");
-      setTimeout(() => {
+      schedule(() => {
         killTree("SIGKILL");
-      }, 2000).unref();
+      }, 2000);
     }, options.timeout);
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       stdout += chunk;
-      if (!overflowed && stdout.length > options.maxBuffer) {
+      // Count bytes, not UTF-16 code units: multibyte output would otherwise occupy
+      // up to twice the named budget before the cap fires.
+      stdoutBytes += Buffer.byteLength(chunk, "utf8");
+      if (!overflowed && stdoutBytes > options.maxBuffer) {
         overflowed = true;
         killTree("SIGKILL");
       }
     });
+    const outcome = (status: number | null, signal: NodeJS.Signals | null): SpawnResult => ({
+      ...(timedOut
+        ? { error: new Error("ETIMEDOUT: LLM backend timed out") }
+        : overflowed
+          ? { error: new Error("LLM backend exceeded the output cap") }
+          : {}),
+      signal,
+      status,
+      stdout,
+    });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ error, signal: null, status: null, stdout: null });
+      finish({ error, signal: null, status: null, stdout: null });
     });
     child.on("close", (status, signal) => {
-      clearTimeout(timer);
-      resolve({
-        ...(timedOut
-          ? { error: new Error("ETIMEDOUT: LLM backend timed out") }
-          : overflowed
-            ? { error: new Error("LLM backend exceeded the output cap") }
-            : {}),
-        signal,
-        status,
-        stdout,
-      });
+      finish(outcome(status, signal));
+    });
+    // 'close' waits for all stdio pipes — a surviving grandchild holding the
+    // inherited stdout would hang the scan forever. Once the child itself exits,
+    // give trailing output one second and then finish regardless.
+    child.on("exit", (status, signal) => {
+      schedule(() => {
+        finish(outcome(status, signal));
+      }, 1000);
     });
     // EPIPE if the child exits before reading the prompt — swallow, the close
     // handler reports the real outcome.
@@ -278,7 +334,6 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
         cacheDirFn,
         (prompt) =>
           run(shell, shellArgs, {
-            encoding: "utf8",
             input: prompt,
             maxBuffer: MAX_BUFFER_BYTES,
             timeout: opts.timeoutMs,
@@ -292,13 +347,18 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
 
   const claude = whichFn("claude");
   if (claude !== null) {
+    // npm-installed Windows shims (.cmd/.bat) cannot be spawned directly
+    // (Node >= 20 throws EINVAL); route them through cmd.exe like a shell would.
+    const winShim = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(claude);
+    const [cmd, cmdArgs] = winShim
+      ? (["cmd", ["/d", "/s", "/c", `"${claude}" -p`]] as const)
+      : ([claude, ["-p"]] as const);
     return {
       // The prompt goes on stdin, not argv: one line per skill at hundreds of skills
       // exceeds the OS per-argument limit (E2BIG), which would silently disable the
       // claude backend on exactly the repos that most need the rescue.
       fn: makeCachedGrouper("claude", cacheDirFn, (prompt) =>
-        run(claude, ["-p"], {
-          encoding: "utf8",
+        run(cmd, cmdArgs, {
           input: prompt,
           maxBuffer: MAX_BUFFER_BYTES,
           timeout: opts.timeoutMs,
@@ -327,11 +387,14 @@ function makeCachedGrouper(
     }
     onRun?.();
     const result = await invoke(buildClusterPrompt(skills));
-    if (isSpawnFailure(result)) {
+    if (isSpawnFailure(result) || result.stdout === null) {
       return [];
     }
     const validDirs = new Set(skills.map((s) => s.dir));
-    const groups = parseClusterResponse(String(result.stdout), validDirs) ?? [];
+    // partitionSkills re-validates whatever crosses the GroupSkillsFn seam (it must —
+    // the seam accepts arbitrary BYO functions); the filtering here exists so the
+    // cache predicate and the empty-output signal see clean groups.
+    const groups = parseClusterResponse(result.stdout, validDirs) ?? [];
     // Only cache gate-passing groupings: a parseable-but-rejected response (e.g. one
     // giant group) replayed from cache would permanently disable the stochastic LLM
     // rescue for this skill set, while parse failures deliberately retry.
@@ -352,7 +415,7 @@ function isSpawnFailure(result: SpawnResult): boolean {
     result.error !== undefined ||
     result.signal !== null ||
     (result.status !== null && result.status !== 0) ||
-    typeof result.stdout !== "string"
+    result.stdout === null
   );
 }
 

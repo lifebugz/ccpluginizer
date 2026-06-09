@@ -161,6 +161,12 @@ describe("parseYamlFrontmatter: depth and edge cases", () => {
     expect(parseYamlFrontmatter(body)["tags"]).toEqual(["a", "b"]);
   });
 
+  test("a next-line scalar containing a URL colon folds (not misparsed as a map)", () => {
+    const body = ["description:", "  See https://docs.telnyx.com for details", "name: foo"].join("\n");
+    const out = parseYamlFrontmatter(body);
+    expect(out["description"]).toBe("See https://docs.telnyx.com for details");
+  });
+
   test("folds a plain scalar that starts on the following line (no indicator)", () => {
     const body = ["description:", "  Send SMS via the Telnyx API", "name: foo"].join("\n");
     const out = parseYamlFrontmatter(body);

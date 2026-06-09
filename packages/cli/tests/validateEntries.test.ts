@@ -40,10 +40,11 @@ describe("collectEntries: friendly errors", () => {
         { name: "b", source: { source: "github", repo: "x/y" } },
       ];
       writeFileSync(join(tmp, "entries.json"), JSON.stringify(entries));
-      const collected = collectEntries(tmp);
-      expect(collected).toHaveLength(2);
+      const { items, sources } = collectEntries(tmp);
+      expect(items).toHaveLength(2);
+      expect(sources).toEqual(["entries.json[0]", "entries.json[1]"]);
       // The validator must see two real entries, not one (non-conforming) array element.
-      expect(validateEntries(collected).ok).toBe(true);
+      expect(validateEntries(items, sources).ok).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -98,6 +99,22 @@ describe("collectEntries: empty artifacts are rejected", () => {
       const file = join(tmp, "empty.json");
       writeFileSync(file, "[]\n");
       expect(() => collectEntries(file)).toThrow(/No entries found/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("validateEntries: error provenance", () => {
+  test("a broken entry in a directory is attributed to its file, not a flat index", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-attrib-"));
+    try {
+      writeFileSync(join(tmp, "good.json"), JSON.stringify({ name: "good", source: { source: "github", repo: "a/b" } }));
+      writeFileSync(join(tmp, "broken.json"), JSON.stringify({ name: "BAD NAME", source: { source: "github", repo: "a/b" } }));
+      const { items, sources } = collectEntries(tmp);
+      const r = validateEntries(items, sources);
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((e) => e.includes("broken.json"))).toBe(true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

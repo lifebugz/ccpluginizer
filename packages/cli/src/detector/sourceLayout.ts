@@ -1,16 +1,14 @@
-import { readFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import {
   dirContainsDir,
   dirContainsFile,
-  isAgentFile,
-  lastPathSegment,
   makeDirLister,
-  makeFrontmatterReader,
+  readJsonFile,
   walkTree,
   type DirLister,
-  type FrontmatterReader,
+  type SkipReporter,
 } from "./fsWalk.ts";
+import { isAgentFile, makeFrontmatterReader, type FrontmatterReader } from "./frontmatterIo.ts";
 import { byCodeUnit } from "./slugify.ts";
 
 export interface ContainerRef {
@@ -57,6 +55,8 @@ export interface SourceLayout {
 
 export interface LayoutResolver {
   readonly skillsContainer: ContainerRef | null;
+  /** Raw SKILL.md child count of the chosen container (>= the parseable skill count). */
+  readonly skillDirCount: number;
   readonly skillDirsOutsideContainer: number;
   /** The walk's memoized lister, shareable with enumerateSkills and the sniffer. */
   readonly list: DirLister;
@@ -80,9 +80,15 @@ const SKIP_DIRS = new Set([
  * only consumed once a split actually fires — resolve lazily on full(). This keeps
  * the common sub-threshold scan from reading and parsing every .md in the repo.
  */
-export function createLayoutResolver(repoRoot: string): LayoutResolver {
-  const list = makeDirLister();
-  const readFm = makeFrontmatterReader();
+export interface LayoutCaches {
+  readonly list?: DirLister;
+  readonly readFrontmatter?: FrontmatterReader;
+  readonly onSkip?: SkipReporter;
+}
+
+export function createLayoutResolver(repoRoot: string, caches: LayoutCaches = {}): LayoutResolver {
+  const list = caches.list ?? makeDirLister(caches.onSkip);
+  const readFm = caches.readFrontmatter ?? makeFrontmatterReader();
   const dirs: string[] = [];
   walkTree(repoRoot, { skipDirs: SKIP_DIRS, list, onDir: (d) => dirs.push(d) });
 
@@ -99,6 +105,7 @@ export function createLayoutResolver(repoRoot: string): LayoutResolver {
   let full: SourceLayout | null = null;
   return {
     skillsContainer,
+    skillDirCount: best?.count ?? 0,
     skillDirsOutsideContainer,
     list,
     readFrontmatter: readFm,
@@ -190,7 +197,7 @@ function resolveAgentsContainer(
   // (docs/, examples/) that would otherwise win on raw count and become the core
   // entry's git-subdir root. Scoring them first also skips parsing every other
   // .md in the repo on the common conventional layout.
-  const named = dirs.filter((d) => lastPathSegment(toRel(repoRoot, d)) === "agents").map(score);
+  const named = dirs.filter((d) => basename(d) === "agents").map(score);
   const best = pickBest(named) ?? pickBest(dirs.map(score));
   return best === null
     ? null
@@ -215,13 +222,31 @@ function resolvePluginRoot(
   return best === null ? null : { relPath: best.relPath };
 }
 
+/**
+ * Directories whose configs count as the plugin's own: under the plugin root when
+ * one exists, otherwise the repo root and root .claude/ (mirroring the conventions
+ * detector). Sweeping the whole tree would inline a stray examples/.mcp.json into
+ * the published core entry.
+ */
+function anchoredDirs(
+  repoRoot: string,
+  dirs: readonly string[],
+  pluginRoot: { relPath: string } | null,
+): string[] {
+  if (pluginRoot !== null) {
+    const rootAbs = pluginRoot.relPath === "." ? repoRoot : join(repoRoot, pluginRoot.relPath);
+    return dirs.filter((d) => d === rootAbs || d.startsWith(`${rootAbs}${sep}`));
+  }
+  return dirs.filter((d) => d === repoRoot || d === join(repoRoot, ".claude"));
+}
+
 function resolveMcp(
   repoRoot: string,
   dirs: readonly string[],
   list: DirLister,
   pluginRoot: { relPath: string } | null,
 ): McpRef | null {
-  const files = dirs
+  const files = anchoredDirs(repoRoot, dirs, pluginRoot)
     .filter((d) => dirContainsFile(list, d, ".mcp.json"))
     .map((d) => ({ file: join(d, ".mcp.json"), relPath: toRel(repoRoot, join(d, ".mcp.json")) }))
     .sort((a, b) => preferUnder(pluginRoot, a.relPath, b.relPath));
@@ -231,7 +256,7 @@ function resolveMcp(
   for (const chosen of files) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(readFileSync(chosen.file, "utf8"));
+      parsed = readJsonFile(chosen.file);
     } catch {
       continue;
     }
@@ -253,13 +278,16 @@ function resolveArtifacts(
   pluginRoot: { relPath: string } | null,
 ): ArtifactRef[] {
   const out: ArtifactRef[] = [];
+  // Only conventional locations count: a src/commands/ code directory anywhere in
+  // the tree must not be reported (or emitted) as a slash-command artifact.
+  const anchored = anchoredDirs(repoRoot, dirs, pluginRoot);
   // hooks and monitors share the two-location `<kind>/<kind>.json` | `<kind>.json` probe.
-  const hooks = resolveJsonFileArtifact(repoRoot, dirs, list, pluginRoot, "hooks");
+  const hooks = resolveJsonFileArtifact(repoRoot, anchored, list, pluginRoot, "hooks");
   if (hooks !== null) {
     out.push({ kind: "hooks", relPath: hooks });
   }
   for (const kind of ARTIFACT_DIR_KINDS) {
-    const hits = dirs
+    const hits = anchored
       .filter((d) => dirContainsDir(list, d, kind))
       .map((d) => toRel(repoRoot, join(d, kind)))
       .sort((a, b) => preferUnder(pluginRoot, a, b));
@@ -267,7 +295,7 @@ function resolveArtifacts(
       out.push({ kind, relPath: hits[0] });
     }
   }
-  const monitors = resolveJsonFileArtifact(repoRoot, dirs, list, pluginRoot, "monitors");
+  const monitors = resolveJsonFileArtifact(repoRoot, anchored, list, pluginRoot, "monitors");
   if (monitors !== null) {
     out.push({ kind: "monitors", relPath: monitors });
   }
@@ -377,7 +405,9 @@ function classifyOne(server: unknown): McpServerType {
     x.startsWith("./") ||
     x.startsWith("../") ||
     x.startsWith("/") ||
-    x.includes("${") ||
+    // Only path-root expansion marks a server repo-local; generic env interpolation
+    // like ${API_KEY} resolves from the environment and stays portable.
+    x.includes("${CLAUDE_PLUGIN_ROOT}") ||
     (x.includes("/") && SCRIPT_EXT.test(x));
   if (refsLocal(cmd) || args.some(refsLocal)) {
     return "repo-local";
