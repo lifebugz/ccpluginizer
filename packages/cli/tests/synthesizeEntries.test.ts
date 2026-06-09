@@ -1,9 +1,8 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { synthesizeEntry, synthesizeEntries } from "../src/detector/synthesize.ts";
-import { makeNestedPlugin } from "./helpers.ts";
+import { makeFlatSkillsRepo, makeNestedPlugin } from "./helpers.ts";
 import type { MarketplaceEntry } from "../src/schemas/marketplaceEntry.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
@@ -326,20 +325,16 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
 });
 
 describe("synthesizeEntries: regression fixes", () => {
-  test("umbrella entry is strict:false when the repo has no plugin root", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ccp-flat-"));
+  test("plugin-less umbrella is strict:false and carries components explicitly", async () => {
+    const root = makeFlatSkillsRepo({ alpha: 4, beta: 4 });
     try {
-      for (const p of ["alpha", "beta"]) {
-        for (let i = 0; i < 4; i++) {
-          const dir = join(root, "skills", `${p}-${String(i)}`);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(join(dir, "SKILL.md"), `---\ndescription: ${p} ${String(i)}.\nmetadata:\n  product: ${p}\n---\n`);
-        }
-      }
       const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/flat", umbrella: true, strategy: "metadata", minSkillsToSplit: 2 });
       const umbrella = res.entries.find((e) => e.name === "test-flat");
       expect(umbrella).toBeDefined();
       expect(umbrella?.strict).toBe(false); // strict needs plugin.json at the source root
+      // A bare git-subdir at "." would rely on root auto-discovery; components are explicit.
+      expect(umbrella?.skills).toContain("./skills/alpha-0/");
+      expect(umbrella?.skills?.length).toBe(8);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -370,23 +365,47 @@ describe("synthesizeEntries: regression fixes", () => {
   });
 
   test("core is never rooted at a container that would auto-load skills/", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ccp-rootagents-"));
+    const root = makeFlatSkillsRepo({ alpha: 4, beta: 4 });
     try {
       writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { x: { type: "http", url: "https://x" } } }));
       writeFileSync(join(root, "dev.md"), "---\nname: dev\ndescription: Dev agent.\n---\n");
-      for (const p of ["alpha", "beta"]) {
-        for (let i = 0; i < 4; i++) {
-          const dir = join(root, "skills", `${p}-${String(i)}`);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(join(dir, "SKILL.md"), `---\ndescription: ${p} ${String(i)}.\nmetadata:\n  product: ${p}\n---\n`);
-        }
-      }
       const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/rooty", strategy: "metadata", minSkillsToSplit: 2 });
       const core = res.entries.find((e) => e.name.endsWith("-core"));
       expect(core).toBeDefined();
       expect(core?.agents).toBeUndefined(); // agents dropped rather than auto-loading every skill
       expect((core?.source as { path?: string }).path).toBe("skills");
       expect(res.warnings.some((w) => w.includes("auto-load"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an agents dir with its own (non-chosen) skills/ child is also refused as core root", async () => {
+    const root = makeFlatSkillsRepo({ alpha: 4, beta: 4 });
+    try {
+      mkdirSync(join(root, "agents", "skills", "stray"), { recursive: true });
+      writeFileSync(join(root, "agents", "dev.md"), "---\nname: dev\ndescription: Dev agent.\n---\n");
+      writeFileSync(join(root, "agents", "skills", "stray", "SKILL.md"), "---\ndescription: stray.\n---\n");
+      const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/agentskills", strategy: "metadata", minSkillsToSplit: 2 });
+      const core = res.entries.find((e) => e.name.endsWith("-core"));
+      // No MCP and the agents root is unsafe -> no core at all, with the auto-load warning.
+      expect(core).toBeUndefined();
+      expect(res.warnings.some((w) => w.includes("auto-load"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a marker with groups: [] takes the freeze-only path (skills are not dropped)", async () => {
+    const root = makeNestedPlugin({
+      products: { messaging: 4, voice: 4 },
+      marker: { name: "curated", groups: [] },
+    });
+    try {
+      const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/telnyx" });
+      expect(res.entries.length).toBe(1);
+      expect(res.entries[0]?.name).toBe("curated");
+      expect((res.entries[0]?.skills ?? []).length).toBeGreaterThan(0); // detection ran
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

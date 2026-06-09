@@ -204,7 +204,7 @@ describe("scan CLI: --cluster=llm notices", () => {
       const { stderr, stdout, code } = await runScan([root, "--cluster=llm", "--min-skills=2"]);
       expect(code).toBe(0);
       expect(stderr).toMatch(/--cluster=llm produced no split/);
-      expect(stderr).toMatch(/no LLM backend available/);
+      expect(stderr).toMatch(/no LLM backend found/);
       expect(Array.isArray(JSON.parse(stdout))).toBe(false); // single entry
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -341,7 +341,7 @@ describe("scan CLI: auto-llm reproducibility + rescue", () => {
       const { stderr, code } = await runScan([root, "--cluster=auto-llm", "--min-skills=2"]);
       expect(code).toBe(0);
       expect(stderr).toMatch(/--cluster=auto-llm produced no split/);
-      expect(stderr).toMatch(/no LLM backend available/);
+      expect(stderr).toMatch(/no LLM backend found/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -377,9 +377,15 @@ describe("scan CLI: --write-marker merge + --out-dir hygiene", () => {
       await runScan([root, "--cluster=metadata", "--min-skills=2", `--out-dir=${outDir}`]);
       const coreFile = readdirSync(outDir).find((f) => f.endsWith("-core.json"));
       expect(coreFile).toBeDefined();
+      const core = JSON.parse(readFileSync(join(outDir, coreFile ?? ""), "utf8")) as { source: { url: string } };
       const base = (coreFile ?? "").replace(/-core\.json$/, "");
       const staleName = `${base}-oldslice.json`;
-      writeFileSync(join(outDir, staleName), "{}\n");
+      // Stale detection requires provable ownership: the file must reference this
+      // repo's source URL, or it could be a sibling repo's live entry.
+      writeFileSync(
+        join(outDir, staleName),
+        JSON.stringify({ name: `${base}-oldslice`, source: core.source, strict: false }) + "\n",
+      );
       const { stderr, code } = await runScan([root, "--cluster=metadata", "--min-skills=2", `--out-dir=${outDir}`]);
       expect(code).toBe(0);
       expect(stderr).toMatch(/previous scan/);

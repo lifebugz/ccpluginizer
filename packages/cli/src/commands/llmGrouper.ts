@@ -1,29 +1,37 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as v from "valibot";
-import { rawGroupsAcceptable, type GroupSkillsFn } from "../detector/partition.ts";
+import { rawGroupsAcceptable, type BackendKind } from "../detector/partition.ts";
 import { RawGroupSchema, RawGroupsSchema, type RawGroup } from "../schemas/rawGroups.ts";
 import type { SkillMeta } from "../detector/skillMeta.ts";
 
-export type { RawGroup } from "../schemas/rawGroups.ts";
-
 /** Cap a backend's stdout so a runaway/garbage response cannot exhaust memory. */
-export const CLUSTER_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
+const MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 
-/** The single-signature subset of spawnSync the backends depend on (so tests can fake it). */
+export interface SpawnResult {
+  readonly error?: Error;
+  readonly signal: NodeJS.Signals | null;
+  readonly status: number | null;
+  readonly stdout: unknown;
+}
+
+/** The runner seam the backends depend on (so tests can fake it with a sync value). */
 export type SpawnRun = (
   command: string,
   args: readonly string[],
   options: { encoding: "utf8"; input?: string; maxBuffer: number; timeout: number },
-) => { error?: Error; signal: NodeJS.Signals | null; status: number | null; stdout: unknown };
+) => SpawnResult | Promise<SpawnResult>;
+
+/** A backend's grouping function — the resolved backend IS the kind, so it returns raw groups. */
+export type BackendGroupFn = (skills: readonly SkillMeta[]) => Promise<RawGroup[]>;
 
 export interface ResolvedGrouper {
-  readonly fn: GroupSkillsFn;
+  readonly fn: BackendGroupFn;
   readonly backendId: string;
-  readonly kind: "subprocess" | "claude";
+  readonly kind: BackendKind;
 }
 
 export interface GrouperDeps {
@@ -149,17 +157,107 @@ export function validateRawGroups(parsed: unknown): RawGroup[] | null {
 }
 
 /**
+ * Default runner: async spawn in its own process group (POSIX), so a timeout kills
+ * the user's entire pipeline — spawnSync's timeout signals only the `sh -c` wrapper,
+ * leaving `curl | jq` grandchildren running forever. On Windows the command goes
+ * through `cmd /d /s /c` with verbatim arguments (cmd.exe does not understand
+ * MSVCRT-style backslash quoting).
+ */
+function spawnGroupRun(
+  command: string,
+  args: readonly string[],
+  options: { encoding: "utf8"; input?: string; maxBuffer: number; timeout: number },
+): Promise<SpawnResult> {
+  return new Promise((resolve) => {
+    const win = process.platform === "win32";
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, [...args], {
+        stdio: ["pipe", "pipe", "inherit"],
+        detached: !win,
+        windowsVerbatimArguments: win,
+      });
+    } catch (e) {
+      resolve({ error: e instanceof Error ? e : new Error(String(e)), signal: null, status: null, stdout: null });
+      return;
+    }
+    let stdout = "";
+    let timedOut = false;
+    let overflowed = false;
+    const killTree = (sig: NodeJS.Signals): void => {
+      try {
+        if (!win && child.pid !== undefined) {
+          process.kill(-child.pid, sig); // negative pid: the whole process group
+        } else {
+          child.kill(sig);
+        }
+      } catch {
+        try {
+          child.kill(sig);
+        } catch {
+          // already gone
+        }
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree("SIGTERM");
+      setTimeout(() => {
+        killTree("SIGKILL");
+      }, 2000).unref();
+    }, options.timeout);
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (!overflowed && stdout.length > options.maxBuffer) {
+        overflowed = true;
+        killTree("SIGKILL");
+      }
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ error, signal: null, status: null, stdout: null });
+    });
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      resolve({
+        ...(timedOut
+          ? { error: new Error("ETIMEDOUT: LLM backend timed out") }
+          : overflowed
+            ? { error: new Error("LLM backend exceeded the output cap") }
+            : {}),
+        signal,
+        status,
+        stdout,
+      });
+    });
+    // EPIPE if the child exits before reading the prompt — swallow, the close
+    // handler reports the real outcome.
+    child.stdin?.on("error", () => undefined);
+    if (options.input !== undefined) {
+      child.stdin?.write(options.input);
+    }
+    child.stdin?.end();
+  });
+}
+
+/**
  * Resolve a BYO grouper by precedence: explicit subprocess command → `claude` on PATH → none.
- * Each backend's raw output is gated by partition.ts; backends never touch the gate.
+ * Backends never gate their returned output — partition.ts owns acceptance; they only
+ * consult rawGroupsAcceptable to decide cache writes.
  */
 export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {}): ResolvedGrouper | null {
-  const run: SpawnRun = deps.run ?? ((c, a, o): ReturnType<SpawnRun> => spawnSync(c, a, o));
+  const run: SpawnRun = deps.run ?? spawnGroupRun;
   const whichFn = deps.which ?? which;
   const cacheDirFn = deps.cacheDir ?? defaultCacheDir;
 
   if (opts.cmd !== undefined) {
     const cmd = opts.cmd;
-    const [shell, shellFlag] = process.platform === "win32" ? ["cmd", "/c"] : ["sh", "-c"];
+    // Mirror Node's own shell:true argv for each platform.
+    const [shell, shellArgs] =
+      process.platform === "win32"
+        ? (["cmd", ["/d", "/s", "/c", `"${cmd}"`]] as const)
+        : (["sh", ["-c", cmd]] as const);
     // Trust/provenance: an env-sourced command is shell-executed; announce it once, on
     // first actual run (not at construction), so a committed-marker win — which never
     // invokes the grouper — never triggers it. Cache hits also skip it: the command
@@ -179,10 +277,10 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
         cmd,
         cacheDirFn,
         (prompt) =>
-          run(shell, [shellFlag, cmd], {
+          run(shell, shellArgs, {
             encoding: "utf8",
             input: prompt,
-            maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
+            maxBuffer: MAX_BUFFER_BYTES,
             timeout: opts.timeoutMs,
           }),
         onRun,
@@ -202,7 +300,7 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
         run(claude, ["-p"], {
           encoding: "utf8",
           input: prompt,
-          maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
+          maxBuffer: MAX_BUFFER_BYTES,
           timeout: opts.timeoutMs,
         }),
       ),
@@ -218,19 +316,19 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
 function makeCachedGrouper(
   cacheId: string,
   cacheDir: () => string,
-  invoke: (prompt: string) => ReturnType<SpawnRun>,
+  invoke: (prompt: string) => SpawnResult | Promise<SpawnResult>,
   onRun?: () => void,
-): GroupSkillsFn {
-  return (skills: readonly SkillMeta[]): Promise<RawGroup[]> => {
+): BackendGroupFn {
+  return async (skills: readonly SkillMeta[]): Promise<RawGroup[]> => {
     const cacheKey = hashSkills(skills, cacheId);
     const cached = readCache(cacheDir, cacheKey);
     if (cached !== null) {
-      return Promise.resolve(cached);
+      return cached;
     }
     onRun?.();
-    const result = invoke(buildClusterPrompt(skills));
+    const result = await invoke(buildClusterPrompt(skills));
     if (isSpawnFailure(result)) {
-      return Promise.resolve([]);
+      return [];
     }
     const validDirs = new Set(skills.map((s) => s.dir));
     const groups = parseClusterResponse(String(result.stdout), validDirs) ?? [];
@@ -240,16 +338,16 @@ function makeCachedGrouper(
     if (groups.length > 0 && rawGroupsAcceptable(skills, groups)) {
       writeCache(cacheDir, cacheKey, groups);
     }
-    return Promise.resolve(groups);
+    return groups;
   };
 }
 
 /**
  * Treat a run as failed when the process errored, was signalled (e.g. SIGTERM on timeout),
- * exited non-zero, or produced no string stdout. On timeout spawnSync returns
- * { status: null, signal: "SIGTERM", error: ETIMEDOUT } — so we key on error/signal, not status.
+ * exited non-zero, or produced no string stdout. On timeout the runner reports
+ * { signal: "SIGTERM", error: ETIMEDOUT } — so we key on error/signal, not status.
  */
-function isSpawnFailure(result: ReturnType<SpawnRun>): boolean {
+function isSpawnFailure(result: SpawnResult): boolean {
   return (
     result.error !== undefined ||
     result.signal !== null ||

@@ -1,6 +1,6 @@
 // Shared filesystem traversal: one error-tolerant, symlink-following, memoized
 // lister feeds every detector (sourceLayout, contentSniff, skillMeta), so a scan
-// pays one readdir per directory instead of three and never re-stats a child.
+// pays one readdir per directory and parses each frontmatter file at most once.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -49,6 +49,22 @@ export function makeDirLister(): DirLister {
   };
 }
 
+/** Does `dir`'s cached listing contain a regular file named `name`? */
+export function dirContainsFile(list: DirLister, dir: string, name: string): boolean {
+  return list(dir).some((e) => e.isFile && e.name === name);
+}
+
+/** Does `dir`'s cached listing contain a directory named `name`? */
+export function dirContainsDir(list: DirLister, dir: string, name: string): boolean {
+  return list(dir).some((e) => e.isDirectory && e.name === name);
+}
+
+/** Final path segment, ignoring "."/empty segments and a trailing slash. */
+export function lastPathSegment(p: string): string {
+  const parts = p.split("/").filter((seg) => seg !== "" && seg !== ".");
+  return parts[parts.length - 1] ?? p;
+}
+
 export interface WalkOptions {
   readonly skipDirs: ReadonlySet<string>;
   readonly list?: DirLister;
@@ -59,7 +75,22 @@ export interface WalkOptions {
 /** Depth-first walk from root (root itself visits onDir), skipping skipDirs by name. */
 export function walkTree(root: string, options: WalkOptions): void {
   const list = options.list ?? makeDirLister();
+  // Cycle guard: the lister follows symlinks, so a link to an ancestor would
+  // otherwise re-traverse the tree until the kernel's resolution limit. Track
+  // visited directories by dev:ino identity, not by (alias-prone) path.
+  const seen = new Set<string>();
   const visit = (dir: string): void => {
+    let id: string;
+    try {
+      const st = statSync(dir);
+      id = `${String(st.dev)}:${String(st.ino)}`;
+    } catch {
+      return; // vanished / unreadable — skip
+    }
+    if (seen.has(id)) {
+      return;
+    }
+    seen.add(id);
     options.onDir?.(dir);
     for (const entry of list(dir)) {
       if (options.skipDirs.has(entry.name)) {
@@ -98,8 +129,23 @@ export function readFrontmatter(filePath: string): Record<string, unknown> | nul
   return extractFrontmatter(raw);
 }
 
+export type FrontmatterReader = (file: string) => Record<string, unknown> | null;
+
+/** Memoizing frontmatter reader, so layout resolution and sniffing parse each file once. */
+export function makeFrontmatterReader(): FrontmatterReader {
+  const cache = new Map<string, Record<string, unknown> | null>();
+  return (file: string): Record<string, unknown> | null => {
+    if (cache.has(file)) {
+      return cache.get(file) ?? null;
+    }
+    const fm = readFrontmatter(file);
+    cache.set(file, fm);
+    return fm;
+  };
+}
+
 /** Single authority for "is this .md an agent file": frontmatter parses as agent. */
-export function isAgentFile(filePath: string): boolean {
-  const fm = readFrontmatter(filePath);
+export function isAgentFile(filePath: string, readFm: FrontmatterReader = readFrontmatter): boolean {
+  const fm = readFm(filePath);
   return fm !== null && v.safeParse(AgentFrontmatterSchema, fm).success;
 }

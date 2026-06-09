@@ -72,3 +72,19 @@ export function makeNestedPlugin(opts: PluginOpts): string {
   }
   return root;
 }
+
+/** Scaffold a flat repo: skills/<product>-<i>/SKILL.md at the root, no plugin shell. */
+export function makeFlatSkillsRepo(products: Record<string, number>): string {
+  const root = mkdtempSync(join(tmpdir(), "ccp-flat-"));
+  for (const [product, count] of Object.entries(products)) {
+    for (let i = 0; i < count; i++) {
+      const dir = join(root, "skills", `${product}-${String(i)}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "SKILL.md"),
+        `---\ndescription: ${product} ${String(i)}.\nmetadata:\n  product: ${product}\n---\n`,
+      );
+    }
+  }
+  return root;
+}

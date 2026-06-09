@@ -30,8 +30,9 @@ describe("resolveSourceLayout: nested telnyx-shaped plugin", () => {
     expect(layout.mcp?.servers).toEqual({ telnyx: { type: "http", url: "https://api.telnyx.com/v2/mcp" } });
   });
 
-  test("finds the hooks file", () => {
-    expect(layout.hooks?.relPath).toBe("providers/claude/plugin/hooks/hooks.json");
+  test("finds the hooks file as a uniform artifact", () => {
+    const hooks = layout.artifacts.find((a) => a.kind === "hooks");
+    expect(hooks?.relPath).toBe("providers/claude/plugin/hooks/hooks.json");
   });
 });
 

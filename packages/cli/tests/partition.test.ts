@@ -4,6 +4,7 @@ import {
   partitionByMetadata,
   partitionByNamePrefix,
   partitionSkills,
+  type GrouperRun,
   type Grouping,
 } from "../src/detector/partition.ts";
 import { mk } from "./helpers.ts";
@@ -127,7 +128,7 @@ describe("partitionByNamePrefix: flat repos", () => {
 describe("partitionSkills: orchestrator", () => {
   test("auto cascade falls to metadata when no marker/llm provided", async () => {
     const skills = telnyxLike();
-    const result = await partitionSkills(skills, { strategy: "auto" });
+    const { result } = await partitionSkills(skills, { strategy: "auto" });
     expect(result).not.toBeNull();
     expect(result?.strategy).toBe("metadata");
   });
@@ -137,7 +138,7 @@ describe("partitionSkills: orchestrator", () => {
       mk("telnyx-messaging-python", "messaging"),
       mk("telnyx-voice-python", "voice"),
     ];
-    const result = await partitionSkills(skills, {
+    const { result } = await partitionSkills(skills, {
       markerGroups: [
         { slug: "messaging", skills: ["./telnyx-messaging-python/"] },
         { slug: "voice", skills: ["./telnyx-voice-python/"] },
@@ -153,43 +154,46 @@ describe("partitionSkills: orchestrator", () => {
   test("auto never invokes the injected grouper (deterministic-only)", async () => {
     const skills = telnyxLike();
     let called = false;
-    const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> => {
+    const group = (s: readonly SkillMeta[]): Promise<GrouperRun | null> => {
       called = true;
       const half = Math.ceil(s.length / 2);
-      return Promise.resolve([
-        { slug: "first", members: s.slice(0, half).map((x) => x.dir) },
-        { slug: "second", members: s.slice(half).map((x) => x.dir) },
-      ]);
+      return Promise.resolve({
+        kind: "subprocess" as const,
+        groups: [
+          { slug: "first", members: s.slice(0, half).map((x) => x.dir) },
+          { slug: "second", members: s.slice(half).map((x) => x.dir) },
+        ],
+      });
     };
-    const result = await partitionSkills(skills, { strategy: "auto", group });
+    const { result } = await partitionSkills(skills, { strategy: "auto", group });
     expect(called).toBe(false);
     expect(result?.strategy).toBe("metadata");
   });
 
   test("llm cascades to a deterministic strategy when the model output is gate-rejected", async () => {
     const skills = telnyxLike(); // well-named: deterministic succeeds
-    const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> =>
+    const group = (s: readonly SkillMeta[]): Promise<GrouperRun | null> =>
       // one group with everything -> >70% and K<2 -> gate rejects
-      Promise.resolve([{ slug: "all", members: s.map((x) => x.dir) }]);
-    const result = await partitionSkills(skills, { strategy: "llm", group });
+      Promise.resolve({ kind: "subprocess" as const, groups: [{ slug: "all", members: s.map((x) => x.dir) }] });
+    const { result } = await partitionSkills(skills, { strategy: "llm", group });
     expect(result).not.toBeNull();
     expect(result?.strategy).toBe("metadata");
   });
 
   test("llm with no grouper falls through to the deterministic cascade", async () => {
     const skills = telnyxLike();
-    const result = await partitionSkills(skills, { strategy: "llm" });
+    const { result } = await partitionSkills(skills, { strategy: "llm" });
     expect(result?.strategy).toBe("metadata");
   });
 
   test("auto-llm: deterministic win skips the grouper entirely", async () => {
     const skills = telnyxLike();
     let called = false;
-    const group = (): Promise<{ slug: string; members: string[] }[]> => {
+    const group = (): Promise<GrouperRun | null> => {
       called = true;
-      return Promise.resolve([]);
+      return Promise.resolve({ kind: "subprocess" as const, groups: [] });
     };
-    const result = await partitionSkills(skills, { strategy: "auto-llm", group });
+    const { result } = await partitionSkills(skills, { strategy: "auto-llm", group });
     expect(called).toBe(false);
     expect(result?.strategy).toBe("metadata");
   });
@@ -198,14 +202,17 @@ describe("partitionSkills: orchestrator", () => {
     const skills = unpartitionable();
     let called = false;
     const half = Math.ceil(skills.length / 2);
-    const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> => {
+    const group = (s: readonly SkillMeta[]): Promise<GrouperRun | null> => {
       called = true;
-      return Promise.resolve([
-        { slug: "first", members: s.slice(0, half).map((x) => x.dir) },
-        { slug: "second", members: s.slice(half).map((x) => x.dir) },
-      ]);
+      return Promise.resolve({
+        kind: "subprocess" as const,
+        groups: [
+          { slug: "first", members: s.slice(0, half).map((x) => x.dir) },
+          { slug: "second", members: s.slice(half).map((x) => x.dir) },
+        ],
+      });
     };
-    const result = await partitionSkills(skills, { strategy: "auto-llm", group });
+    const { result } = await partitionSkills(skills, { strategy: "auto-llm", group });
     expect(called).toBe(true);
     expect(result?.strategy).toBe("llm");
     assertDisjointTotalCover(result?.groups ?? [], skills);
@@ -213,9 +220,9 @@ describe("partitionSkills: orchestrator", () => {
 
   test("auto-llm: returns null when both deterministic and the grouper fail", async () => {
     const skills = unpartitionable();
-    const group = (s: readonly SkillMeta[]): Promise<{ slug: string; members: string[] }[]> =>
-      Promise.resolve([{ slug: "all", members: s.map((x) => x.dir) }]); // rejected by gate
-    const result = await partitionSkills(skills, { strategy: "auto-llm", group });
+    const group = (s: readonly SkillMeta[]): Promise<GrouperRun | null> =>
+      Promise.resolve({ kind: "subprocess" as const, groups: [{ slug: "all", members: s.map((x) => x.dir) }] }); // rejected by gate
+    const { result } = await partitionSkills(skills, { strategy: "auto-llm", group });
     expect(result).toBeNull();
   });
 
@@ -224,26 +231,29 @@ describe("partitionSkills: orchestrator", () => {
       mk("d0", "a"), mk("d1", "a"), mk("d2", "a"),
       mk("d3", "b"), mk("d4", "b"), mk("d5", "b"),
     ];
-    const group = (): Promise<{ slug: string; members: string[] }[]> =>
-      Promise.resolve([
-        null as unknown as { slug: string; members: string[] },
-        { slug: "a", members: ["d0", "d1", "d2"] },
-        { slug: "b", members: ["d3", "d4", "d5"] },
-      ]);
-    const result = await partitionSkills(skills, { strategy: "llm", group });
+    const group = (): Promise<GrouperRun | null> =>
+      Promise.resolve({
+        kind: "subprocess" as const,
+        groups: [
+          null as unknown as { slug: string; members: string[] },
+          { slug: "a", members: ["d0", "d1", "d2"] },
+          { slug: "b", members: ["d3", "d4", "d5"] },
+        ],
+      });
+    const { result } = await partitionSkills(skills, { strategy: "llm", group });
     expect(result?.strategy).toBe("llm");
     expect(result?.groups.length).toBe(2);
   });
 
   test("a forced strategy that fails the gate yields null (no split)", async () => {
     const skills = LANGS.map((l) => mk(`a-${l}`, "alpha")); // single product
-    const result = await partitionSkills(skills, { strategy: "metadata" });
+    const { result } = await partitionSkills(skills, { strategy: "metadata" });
     expect(result).toBeNull();
   });
 
   test("auto returns null when nothing partitions cleanly", async () => {
     const skills = [mk("only-one")];
-    const result = await partitionSkills(skills, { strategy: "auto" });
+    const { result } = await partitionSkills(skills, { strategy: "auto" });
     expect(result).toBeNull();
   });
 });
@@ -251,7 +261,7 @@ describe("partitionSkills: orchestrator", () => {
 describe("partitionSkills: marker staleness and path conventions", () => {
   test("a fully-stale marker is ignored (falls back to the cascade) and warns", async () => {
     const skills = telnyxLike();
-    const result = await partitionSkills(skills, {
+    const { result } = await partitionSkills(skills, {
       strategy: "auto",
       markerGroups: [{ slug: "old", skills: ["./gone-a/", "./gone-b/"] }],
     });
@@ -261,7 +271,7 @@ describe("partitionSkills: marker staleness and path conventions", () => {
 
   test("a partially-stale marker buckets unlisted skills into misc and warns", async () => {
     const skills = [mk("a0", "a"), mk("a1", "a"), mk("b0", "b"), mk("b1", "b")];
-    const result = await partitionSkills(skills, {
+    const { result } = await partitionSkills(skills, {
       markerGroups: [{ slug: "alpha", skills: ["./a0/", "./a1/"] }],
     });
     expect(result?.strategy).toBe("marker");
@@ -270,9 +280,23 @@ describe("partitionSkills: marker staleness and path conventions", () => {
     expect(result?.warnings?.some((w) => w.includes("misc"))).toBe(true);
   });
 
+  test("a skill path listed in two marker groups warns (first occurrence wins)", async () => {
+    const skills = [mk("a0", "a"), mk("a1", "a"), mk("b0", "b")];
+    const { result } = await partitionSkills(skills, {
+      markerGroups: [
+        { slug: "one", skills: ["./a0/", "./a1/"] },
+        { slug: "two", skills: ["./a0/", "./b0/"] },
+      ],
+    });
+    expect(result?.strategy).toBe("marker");
+    expect(result?.groups.find((g) => g.slug === "one")?.skills.map((s) => s.dir)).toEqual(["a0", "a1"]);
+    expect(result?.groups.find((g) => g.slug === "two")?.skills.map((s) => s.dir)).toEqual(["b0"]);
+    expect(result?.warnings?.some((w) => w.includes("more than one group"))).toBe(true);
+  });
+
   test("repo-root-relative marker paths resolve via their final segment", async () => {
     const skills = [mk("voice-a", "voice"), mk("msg-a", "messaging")];
-    const result = await partitionSkills(skills, {
+    const { result } = await partitionSkills(skills, {
       markerGroups: [
         { slug: "voice", skills: ["./providers/claude/plugin/skills/voice-a/"] },
         { slug: "messaging", skills: ["./providers/claude/plugin/skills/msg-a/"] },

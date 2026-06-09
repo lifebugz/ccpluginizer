@@ -65,9 +65,17 @@ export function collectEntries(path: string): unknown[] {
     // Flatten array-shaped files the same way the single-file branch does, so a
     // multi-entry array dropped into the directory validates entry-by-entry rather
     // than being mis-parsed as one (non-conforming) array element.
-    return files.flatMap((f) => toEntryList(readJsonFile(join(path, f))));
+    return rejectEmpty(files.flatMap((f) => toEntryList(readJsonFile(join(path, f)))), path);
   }
-  return toEntryList(readJsonFile(path));
+  return rejectEmpty(toEntryList(readJsonFile(path)), path);
+}
+
+/** A `[]` file (or a directory of them) is a truncated artifact, not a valid catalog. */
+function rejectEmpty(items: unknown[], path: string): unknown[] {
+  if (items.length === 0) {
+    throw new Error(`No entries found in: ${path}`);
+  }
+  return items;
 }
 
 /** A parsed JSON file is either a single entry or an array of entries. */

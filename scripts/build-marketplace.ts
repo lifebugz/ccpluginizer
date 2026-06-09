@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
-import { readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { MarketplaceEntrySchema } from "../packages/cli/src/schemas/marketplaceEntry.ts";
+import { collectEntries, validateEntries } from "../packages/cli/src/detector/validateEntries.ts";
+import { byCodeUnit } from "../packages/cli/src/detector/slugify.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const ENTRIES_DIR = join(ROOT, "entries");
@@ -22,26 +24,23 @@ const tombstoned = new Set(
     .map((f) => f.replace(".json", "")),
 );
 
-const entries = readdirSync(ENTRIES_DIR)
-  .filter((f) => f.endsWith(".json"))
-  .flatMap((f) => {
-    const raw = readFileSync(join(ENTRIES_DIR, f), "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    // scan emits a JSON array when a split produces multiple entries — accept both
-    // shapes per file, mirroring `ccpluginizer validate`.
-    const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
-    return items.map((item, i) => {
-      const result = v.safeParse(MarketplaceEntrySchema, item);
-      if (!result.success) {
-        console.error(`Invalid entry ${f}${items.length > 1 ? `[${String(i)}]` : ""}:`, result.issues);
-        process.exit(1);
-      }
-      return result.output;
-    });
-  })
+// Same loader + validator as `ccpluginizer validate`: flattens array-shaped entry
+// files (a split scan emits several entries per file) and enforces cross-entry
+// name uniqueness across the whole catalog.
+const items = collectEntries(ENTRIES_DIR);
+const check = validateEntries(items);
+if (!check.ok) {
+  console.error("Invalid entries:");
+  for (const error of check.errors) {
+    console.error(`  - ${error}`);
+  }
+  process.exit(1);
+}
+
+const entries = items
+  .map((item) => v.parse(MarketplaceEntrySchema, item))
   .filter((e) => !tombstoned.has(e.name))
-  // code-unit compare: localeCompare ordering varies across machines/ICU builds
-  .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  .sort((a, b) => byCodeUnit(a.name, b.name));
 
 const marketplace: MarketplaceFile = {
   name: "ccp-marketplace",

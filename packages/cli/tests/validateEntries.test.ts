@@ -90,3 +90,16 @@ describe("validateEntries", () => {
     expect(validateEntries([core, slice]).ok).toBe(true);
   });
 });
+
+describe("collectEntries: empty artifacts are rejected", () => {
+  test("a file containing [] fails instead of passing as OK (0 entries)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccp-empty-"));
+    try {
+      const file = join(tmp, "empty.json");
+      writeFileSync(file, "[]\n");
+      expect(() => collectEntries(file)).toThrow(/No entries found/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

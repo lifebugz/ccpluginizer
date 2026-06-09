@@ -53,7 +53,7 @@ So `scan` **splits by default, but only when it helps**. When a repo has many sk
 - a shared **`<base>-core`** entry — the plugin's MCP server (inlined, ~0 always-on tokens) and agents;
 - one **`<base>-<domain>`** slice per product cluster, each depending on `-core`, so installing a slice pulls the shared core in transitively and de-duplicates it.
 
-Install only the domains you need; the skill-listing budget is charged only for those. Small or single-domain repos are unaffected — output stays a single entry, identical to before apart from deterministic path ordering (sniff-detected paths are now emitted sorted), and a one-line `stderr` notice reports whenever (and how) a split happened.
+Install only the domains you need; the skill-listing budget is charged only for those. Small or single-domain repos are unaffected — output stays a single entry, identical to before apart from deterministic path ordering (sniff-detected paths are now emitted sorted) and stricter-parser fixes (skills/agents with BOM/CRLF or numeric frontmatter that older versions wrongly dropped are now detected), and a one-line `stderr` notice reports whenever (and how) a split happened.
 
 ```bash
 ccpluginizer scan team-telnyx/ai                 # auto-split (deterministic, offline — no LLM)

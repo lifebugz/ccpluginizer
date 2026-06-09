@@ -1,6 +1,6 @@
 import { Crust } from "@crustjs/core";
 import { confirm } from "@crustjs/prompts";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveSource, inferSourceRepo, parseSourceInput } from "../sources/index.ts";
 import {
@@ -8,8 +8,13 @@ import {
   type MarkerDraft,
   type SynthesizeEntriesResult,
 } from "../detector/synthesize.ts";
-import { detectMarkerFile } from "../detector/markerFile.ts";
-import { CLUSTER_STRATEGIES, type ClusterStrategy, type GroupSkillsFn, type ResolvedStrategy } from "../detector/partition.ts";
+import {
+  CLUSTER_STRATEGIES,
+  type ClusterStrategy,
+  type GroupSkillsFn,
+  type LlmOutcome,
+  type ResolvedStrategy,
+} from "../detector/partition.ts";
 import type { MarketplaceEntry } from "../schemas/marketplaceEntry.ts";
 import type { MarkerFile } from "../schemas/markerFile.ts";
 import { resolveGrouper, type ResolvedGrouper, type ResolveGrouperOpts } from "./llmGrouper.ts";
@@ -39,17 +44,18 @@ export const scanCommand = new Crust("scan")
       ...(flags.llmCmd !== undefined ? { llmCmd: flags.llmCmd } : {}),
       ...(flags.llmTimeout !== undefined ? { llmTimeout: flags.llmTimeout } : {}),
     });
-    const usesLlm = requestedCluster === "llm" || requestedCluster === "auto-llm";
     // Lazy: the backend (and its which("claude") PATH probe) resolves only if the
     // partition actually invokes the grouper — marker wins, deterministic wins, and
-    // sub-threshold scans never pay for it. The runtime records what happened so
-    // notices report facts instead of re-inferring them.
-    const llm: LlmRuntime | null = wantSplit && usesLlm ? makeLazyGrouper(llmConfig) : null;
+    // sub-threshold scans never pay for it.
+    const group: GroupSkillsFn | null =
+      wantSplit && (requestedCluster === "llm" || requestedCluster === "auto-llm")
+        ? makeLazyGrouper(llmConfig)
+        : null;
 
     // Decision B: an explicitly-configured LLM command is ignored under deterministic
     // `auto` (NOT auto-llm, which uses it as a rescue; NOT merely because `claude` is
-    // on PATH).
-    if (requestedCluster === "auto" && llmConfig.cmd !== undefined) {
+    // on PATH). Only worth saying when a split could actually have used it.
+    if (wantSplit && requestedCluster === "auto" && llmConfig.cmd !== undefined) {
       const source = llmConfig.cmdFromEnv ? "CCPLUGINIZER_LLM_CMD" : "--llm-cmd";
       console.error(
         `ccpluginizer: an LLM is configured (${source}) but auto is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
@@ -63,37 +69,41 @@ export const scanCommand = new Crust("scan")
       umbrella: flags.umbrella,
       strategy: requestedCluster,
       minSkillsToSplit: flags.minSkills,
-      ...(llm !== null ? { group: llm.fn } : {}),
+      ...(group !== null ? { group } : {}),
     });
 
     if (flags.interactive && result.split !== null) {
-      result = await reviewSplit(result, { repoPath, sourceRepo, minSkills: flags.minSkills, requestedCluster, llm });
+      result = await reviewSplit(result, { repoPath, sourceRepo });
     }
 
     if (result.split !== null) {
-      printSplitNotice(result, requestedCluster, llm);
-    } else if (result.splitAttemptedButEmpty && usesLlm) {
-      printNoSplitNotice(requestedCluster, llm);
+      printSplitNotice(result, result.llm);
+    } else if (result.splitAttemptedButEmpty && result.llm.step !== "not-invoked") {
+      printNoSplitNotice(requestedCluster, result.llm);
     }
 
     for (const warning of result.warnings) {
       console.error(`ccpluginizer: warning: ${warning}`);
     }
 
-    if (flags.writeMarker && result.marker !== null) {
-      if (parseSourceInput(args.repo).kind !== "local") {
+    if (flags.writeMarker) {
+      if (result.marker === null) {
+        console.error(
+          "ccpluginizer: --write-marker ignored — no split was emitted, so there is no grouping to freeze.",
+        );
+      } else if (parseSourceInput(args.repo).kind !== "local") {
         console.error(
           "ccpluginizer: --write-marker only works on a local path; a github/URL source is cloned to a temp dir that is discarded. Clone the repo locally, re-run `scan <path> --write-marker`, then commit .ccpluginizer.json.",
         );
       } else {
         const markerPath = join(repoPath, ".ccpluginizer.json");
-        const merged = toMarkerFile(result.marker, detectMarkerFile(repoPath));
+        const merged = toMarkerFile(result.marker, result.existingMarker);
         writeFileSync(markerPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
         console.error(`ccpluginizer: wrote frozen split to ${markerPath}`);
       }
     }
 
-    emitOutput(result.entries, flags, result.marker?.name ?? result.entries[0]?.name);
+    emitOutput(result.entries, flags, result.marker?.name ?? result.entries[0]?.name, sourceRepo);
   });
 
 function normalizeStrategy(value: string): ClusterStrategy {
@@ -103,9 +113,6 @@ function normalizeStrategy(value: string): ClusterStrategy {
   console.error(`ccpluginizer: unknown --cluster "${value}"; using auto.`);
   return "auto";
 }
-
-/** Back-compat alias: the LLM config IS the grouper-resolution options. */
-export type LlmConfig = ResolveGrouperOpts;
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 
@@ -125,7 +132,7 @@ function trimOrUndefined(value: string | undefined): string | undefined {
 export function resolveLlmConfig(
   flags: { readonly llmCmd?: string; readonly llmTimeout?: number },
   env: NodeJS.ProcessEnv = process.env,
-): LlmConfig {
+): ResolveGrouperOpts {
   const flagCmd = trimOrUndefined(flags.llmCmd);
   const envCmd = trimOrUndefined(env["CCPLUGINIZER_LLM_CMD"]);
   const cmd = flagCmd ?? envCmd;
@@ -144,82 +151,55 @@ export function resolveLlmConfig(
   };
 }
 
-export interface LlmRuntimeState {
-  /** True once the grouper was actually invoked by partitioning. */
-  attempted: boolean;
-  /** Backend resolved on first invocation; null = none found (or never invoked). */
-  resolved: ResolvedGrouper | null;
-  /** True when the backend returned at least one parseable group. */
-  produced: boolean;
-}
-
-export interface LlmRuntime {
-  readonly fn: GroupSkillsFn;
-  readonly state: LlmRuntimeState;
-}
-
 /**
- * Wrap resolveGrouper in a lazy, outcome-recording GroupSkillsFn: resolution (incl.
- * the `claude` PATH probe) happens on first invocation only, and the recorded state
- * lets the split notices state exactly what the LLM step did.
+ * Wrap resolveGrouper in a lazily-resolving GroupSkillsFn: the backend (and its
+ * which("claude") PATH probe) resolves on first invocation only, and the GrouperRun
+ * contract carries the backend identity so partitionSkills can report the outcome.
  */
 export function makeLazyGrouper(
   config: ResolveGrouperOpts,
   resolve: (opts: ResolveGrouperOpts) => ResolvedGrouper | null = resolveGrouper,
-): LlmRuntime {
-  const state: LlmRuntimeState = { attempted: false, resolved: null, produced: false };
-  const fn: GroupSkillsFn = async (skills) => {
-    if (!state.attempted) {
-      state.attempted = true;
-      state.resolved = resolve(config);
+): GroupSkillsFn {
+  let backend: ResolvedGrouper | null | undefined;
+  return async (skills) => {
+    if (backend === undefined) {
+      backend = resolve(config);
     }
-    if (state.resolved === null) {
-      return [];
+    if (backend === null) {
+      return null;
     }
-    const groups = await state.resolved.fn(skills);
-    if (groups.length > 0) {
-      state.produced = true;
-    }
-    return groups;
+    return { kind: backend.kind, groups: await backend.fn(skills) };
   };
-  return { fn, state };
 }
 
 /** Render the resolved-strategy clause for a notice or the review screen. */
-function describeStrategy(
-  strategy: ResolvedStrategy,
-  requestedCluster: ClusterStrategy,
-  llm: LlmRuntime | null,
-): string {
+function describeStrategy(strategy: ResolvedStrategy, llm: LlmOutcome): string {
   if (strategy === "marker") {
     return "via committed marker (.ccpluginizer.json)";
   }
   if (strategy === "llm") {
-    return `via ${llm?.state.resolved?.kind ?? "subprocess"} clustering`;
+    return `via ${llm.step === "won" ? llm.kind : "subprocess"} clustering`;
   }
-  // A deterministic strategy under --cluster=llm (LLM-first) means the LLM step
-  // failed; the runtime recorded exactly how.
-  if (requestedCluster === "llm") {
-    return `via ${strategy} clustering (${llmFailureReason(llm)})`;
+  if (llm.step === "not-invoked") {
+    return `via ${strategy} clustering`;
   }
-  // auto, a named deterministic strategy, or auto-llm where deterministic won outright (a success).
-  return `via ${strategy} clustering`;
+  // A deterministic strategy after the LLM step ran means the LLM step failed —
+  // the partition orchestrator reported exactly how.
+  return `via ${strategy} clustering (${llmFailureReason(llm)})`;
 }
 
-function llmFailureReason(llm: LlmRuntime | null): string {
-  if ((llm?.state.resolved ?? null) === null) {
-    return "no LLM backend found; set --llm-cmd or install the `claude` CLI";
+/** The single renderer of the LLM-failure taxonomy; both notices compose it. */
+function llmFailureReason(llm: LlmOutcome): string {
+  if (llm.step === "gate-rejected") {
+    return "the LLM grouping was rejected by the acceptance gate";
   }
-  return llm?.state.produced === true
-    ? "the LLM grouping was rejected by the acceptance gate"
-    : "the LLM backend was unreachable or produced no output";
+  if (llm.step === "no-output") {
+    return "the LLM backend was unreachable or produced no output";
+  }
+  return "no LLM backend found; set --llm-cmd or install the `claude` CLI";
 }
 
-export function printSplitNotice(
-  result: SynthesizeEntriesResult,
-  requestedCluster: ClusterStrategy,
-  llm: LlmRuntime | null,
-): void {
+export function printSplitNotice(result: SynthesizeEntriesResult, llm: LlmOutcome): void {
   if (result.split === null) {
     return;
   }
@@ -232,30 +212,25 @@ export function printSplitNotice(
     parts.push("1 umbrella");
   }
   const entryCount = result.entries.length;
-  const via = describeStrategy(result.split.strategy, requestedCluster, llm);
+  const via = describeStrategy(result.split.strategy, llm);
   console.error(
     `ccpluginizer: split into ${String(entryCount)} ${entryCount === 1 ? "entry" : "entries"} (${parts.join(" + ")}) ${via}. Use --no-split for a single entry.`,
   );
 }
 
-export function printNoSplitNotice(requestedCluster: ClusterStrategy, llm: LlmRuntime | null): void {
-  const reason =
-    (llm?.state.resolved ?? null) === null
-      ? "no clean deterministic partition and no LLM backend available"
-      : llm?.state.produced === true
-        ? "the LLM grouping was rejected by the acceptance gate and no clean deterministic partition"
-        : "the LLM backend was unreachable or produced no output, and no clean deterministic partition";
+export function printNoSplitNotice(requestedCluster: ClusterStrategy, llm: LlmOutcome): void {
   console.error(
-    `ccpluginizer: --cluster=${requestedCluster} produced no split — ${reason}; emitting a single entry.`,
+    `ccpluginizer: --cluster=${requestedCluster} produced no split — ${llmFailureReason(llm)}, and no clean deterministic partition; emitting a single entry.`,
   );
 }
 
 /** Merge the fresh draft over the existing marker, preserving hand-curated fields. */
 function toMarkerFile(draft: MarkerDraft, existing: MarkerFile | null): Record<string, unknown> {
-  // The draft owns name/core/umbrella/groups; every other field (description, license,
+  // The draft owns exactly its own keys; every other field (description, license,
   // homepage, repository, single-entry component lists, ...) is curation that a
-  // --write-marker refresh must not destroy.
-  const draftOwned = new Set(["name", "core", "umbrella", "groups"]);
+  // --write-marker refresh must not destroy. Deriving the set from the draft keeps
+  // future MarkerDraft fields refreshed instead of silently shadowed by stale values.
+  const draftOwned = new Set(Object.keys(draft));
   const preserved: Record<string, unknown> = {};
   if (existing !== null) {
     for (const [key, value] of Object.entries(existing)) {
@@ -265,13 +240,12 @@ function toMarkerFile(draft: MarkerDraft, existing: MarkerFile | null): Record<s
     }
   }
   return {
-    name: draft.name,
-    // Emit `core` explicitly, even when false: synthesize reads `marker.core ?? true`,
-    // so omitting a false would silently re-enable the core entry on the next scan and
-    // a coreless split would not round-trip through the frozen marker.
-    core: draft.core,
-    ...(draft.umbrella ? { umbrella: true } : {}),
-    groups: draft.groups,
+    // `core` is emitted explicitly even when false: synthesize reads `marker.core ?? true`,
+    // so omitting a false would silently re-enable the core entry on the next scan and a
+    // coreless split would not round-trip. `umbrella: false` is omitted (JSON.stringify
+    // drops undefined) to keep the file minimal — absence already means false.
+    ...draft,
+    ...(draft.umbrella ? {} : { umbrella: undefined }),
     ...preserved,
   };
 }
@@ -279,9 +253,6 @@ function toMarkerFile(draft: MarkerDraft, existing: MarkerFile | null): Record<s
 interface ReviewContext {
   readonly repoPath: string;
   readonly sourceRepo: string;
-  readonly minSkills: number;
-  readonly requestedCluster: ClusterStrategy;
-  readonly llm: LlmRuntime | null;
 }
 
 type ConfirmFn = (opts: { message: string; default: boolean }) => Promise<boolean>;
@@ -291,8 +262,7 @@ export async function reviewSplit(
   ctx: ReviewContext,
   confirmFn: ConfirmFn = (opts) => confirm(opts),
 ): Promise<SynthesizeEntriesResult> {
-  const via =
-    result.split !== null ? ` — ${describeStrategy(result.split.strategy, ctx.requestedCluster, ctx.llm)}` : "";
+  const via = result.split !== null ? ` — ${describeStrategy(result.split.strategy, result.llm)}` : "";
   console.error(`ccpluginizer: proposed split${via}`);
   for (const g of result.marker?.groups ?? []) {
     console.error(`  ${g.slug}: ${String(g.skills.length)} skills`);
@@ -310,7 +280,6 @@ export async function reviewSplit(
     repoRoot: ctx.repoPath,
     sourceRepo: ctx.sourceRepo,
     split: false,
-    minSkillsToSplit: ctx.minSkills,
   });
   console.error("ccpluginizer: split declined; emitting a single entry.");
   return single;
@@ -325,6 +294,7 @@ function emitOutput(
   entries: readonly MarketplaceEntry[],
   flags: OutputFlags,
   basePrefix: string | undefined,
+  sourceRepo: string,
 ): void {
   if (flags.outDir !== undefined) {
     if (flags.output !== undefined) {
@@ -336,20 +306,7 @@ function emitOutput(
     for (const entry of entries) {
       writeFileSync(join(flags.outDir, `${entry.name}.json`), JSON.stringify(entry, null, 2) + "\n", "utf8");
     }
-    // Stale-slice hygiene: a regrouped scan leaves previous slices behind in the
-    // shared entries/ dir. Warn, never delete — the dir may hold other repos' entries.
-    if (basePrefix !== undefined) {
-      const current = new Set(entries.map((e) => `${e.name}.json`));
-      const stale = readdirSync(flags.outDir)
-        .filter((f) => f.endsWith(".json") && !current.has(f))
-        .filter((f) => f === `${basePrefix}.json` || f.startsWith(`${basePrefix}-`))
-        .sort();
-      if (stale.length > 0) {
-        console.error(
-          `ccpluginizer: warning: ${String(stale.length)} entry file(s) from a previous scan of this repo remain in ${flags.outDir}: ${stale.join(", ")}. Delete them if this regrouping replaced them.`,
-        );
-      }
-    }
+    warnAboutStaleEntries(entries, flags.outDir, basePrefix, sourceRepo);
     console.error(`ccpluginizer: wrote ${String(entries.length)} entr${entries.length === 1 ? "y" : "ies"} to ${flags.outDir}`);
     return;
   }
@@ -361,4 +318,50 @@ function emitOutput(
   } else {
     console.log(json);
   }
+}
+
+/**
+ * Stale-slice hygiene: a regrouped scan leaves previous slices behind in the shared
+ * entries/ dir. Warn, never delete. Filenames alone are ambiguous (a sibling repo's
+ * base can extend ours), so only files whose JSON references THIS repo's source URL
+ * count as stale.
+ */
+function warnAboutStaleEntries(
+  entries: readonly MarketplaceEntry[],
+  outDir: string,
+  basePrefix: string | undefined,
+  sourceRepo: string,
+): void {
+  if (basePrefix === undefined) {
+    return;
+  }
+  const current = new Set(entries.map((e) => `${e.name}.json`));
+  const expectedUrl = `https://github.com/${sourceRepo}.git`;
+  const stale = readdirSync(outDir)
+    .filter((f) => f.endsWith(".json") && !current.has(f))
+    .filter((f) => f === `${basePrefix}.json` || f.startsWith(`${basePrefix}-`))
+    .filter((f) => {
+      try {
+        return entryReferencesUrl(JSON.parse(readFileSync(join(outDir, f), "utf8")), expectedUrl);
+      } catch {
+        return false; // unreadable/foreign file — not provably ours, stay quiet
+      }
+    })
+    .sort();
+  if (stale.length > 0) {
+    console.error(
+      `ccpluginizer: warning: ${String(stale.length)} entry file(s) from a previous scan of this repo remain in ${outDir}: ${stale.join(", ")}. Delete them if this regrouping replaced them.`,
+    );
+  }
+}
+
+function entryReferencesUrl(parsed: unknown, url: string): boolean {
+  const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+  return items.some((item) => {
+    if (item === null || typeof item !== "object") {
+      return false;
+    }
+    const source = (item as { source?: unknown }).source;
+    return source !== null && typeof source === "object" && (source as { url?: unknown }).url === url;
+  });
 }

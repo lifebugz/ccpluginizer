@@ -1,6 +1,16 @@
 import { readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { isAgentFile, makeDirLister, walkTree, type DirLister } from "./fsWalk.ts";
+import {
+  dirContainsDir,
+  dirContainsFile,
+  isAgentFile,
+  lastPathSegment,
+  makeDirLister,
+  makeFrontmatterReader,
+  walkTree,
+  type DirLister,
+  type FrontmatterReader,
+} from "./fsWalk.ts";
 import { byCodeUnit } from "./slugify.ts";
 
 export interface ContainerRef {
@@ -12,6 +22,8 @@ export interface ContainerRef {
 export interface AgentsRef extends ContainerRef {
   /** Agent `.md` filenames directly inside the container, sorted. */
   readonly files: string[];
+  /** True when the container has a direct `skills/` child — unsafe as a core root. */
+  readonly hasSkillsChild: boolean;
 }
 
 export type McpServerType = "remote" | "package" | "repo-local" | "unknown";
@@ -22,7 +34,7 @@ export interface McpRef {
   readonly relPath: string;
 }
 
-export type ArtifactKind = "commands" | "output-styles" | "themes" | "monitors";
+export type ArtifactKind = "hooks" | "commands" | "output-styles" | "themes" | "monitors";
 
 /** A non-skill artifact a split cannot carry — surfaced as a warning by the caller. */
 export interface ArtifactRef {
@@ -37,8 +49,7 @@ export interface SourceLayout {
   /** The dir holding `.claude-plugin/plugin.json` — the umbrella git-subdir root. */
   readonly pluginRoot: { readonly relPath: string } | null;
   readonly mcp: McpRef | null;
-  readonly hooks: { readonly relPath: string } | null;
-  /** Best hit per non-skill artifact kind (commands/output-styles/themes/monitors). */
+  /** Best hit per non-skill artifact kind (hooks/commands/output-styles/themes/monitors). */
   readonly artifacts: readonly ArtifactRef[];
   /** SKILL.md dirs found under non-chosen candidate containers (uncovered by a split). */
   readonly skillDirsOutsideContainer: number;
@@ -47,9 +58,11 @@ export interface SourceLayout {
 export interface LayoutResolver {
   readonly skillsContainer: ContainerRef | null;
   readonly skillDirsOutsideContainer: number;
-  /** The walk's memoized lister, shareable with enumerateSkills. */
+  /** The walk's memoized lister, shareable with enumerateSkills and the sniffer. */
   readonly list: DirLister;
-  /** Resolve the rest of the layout (agents/plugin/mcp/hooks/artifacts), memoized. */
+  /** Memoized frontmatter reader shared across layout resolution and sniffing. */
+  readonly readFrontmatter: FrontmatterReader;
+  /** Resolve the rest of the layout (agents/plugin/mcp/artifacts), memoized. */
   full(): SourceLayout;
 }
 
@@ -63,12 +76,13 @@ const SKIP_DIRS = new Set([
 
 /**
  * Two-phase resolution: the skills container (needed just to gate the split) is
- * computed eagerly from a single cached walk; agents/mcp/hooks/pluginRoot/artifacts
- * — only consumed once a split actually fires — resolve lazily on full(). This keeps
+ * computed eagerly from a single cached walk; agents/mcp/pluginRoot/artifacts —
+ * only consumed once a split actually fires — resolve lazily on full(). This keeps
  * the common sub-threshold scan from reading and parsing every .md in the repo.
  */
 export function createLayoutResolver(repoRoot: string): LayoutResolver {
   const list = makeDirLister();
+  const readFm = makeFrontmatterReader();
   const dirs: string[] = [];
   walkTree(repoRoot, { skipDirs: SKIP_DIRS, list, onDir: (d) => dirs.push(d) });
 
@@ -87,16 +101,16 @@ export function createLayoutResolver(repoRoot: string): LayoutResolver {
     skillsContainer,
     skillDirsOutsideContainer,
     list,
+    readFrontmatter: readFm,
     full(): SourceLayout {
       if (full === null) {
         const pluginRoot = resolvePluginRoot(repoRoot, dirs, list);
         full = {
           skillsContainer,
           skillDirsOutsideContainer,
-          agentsContainer: resolveAgentsContainer(repoRoot, dirs, list),
+          agentsContainer: resolveAgentsContainer(repoRoot, dirs, list, readFm),
           pluginRoot,
           mcp: resolveMcp(repoRoot, dirs, list, pluginRoot),
-          hooks: resolveHooks(repoRoot, dirs, list, pluginRoot),
           artifacts: resolveArtifacts(repoRoot, dirs, list, pluginRoot),
         };
       }
@@ -112,7 +126,9 @@ export function resolveSourceLayout(repoRoot: string): SourceLayout {
 function countSkillChildren(absDir: string, list: DirLister): number {
   let count = 0;
   for (const child of list(absDir)) {
-    if (child.isDirectory && list(join(absDir, child.name)).some((e) => e.isFile && e.name === "SKILL.md")) {
+    // SKIP_DIRS children were never walked, so probing them would pay fresh
+    // readdirs for dirs that can never win resolution (node_modules, dist, ...).
+    if (child.isDirectory && !SKIP_DIRS.has(child.name) && dirContainsFile(list, join(absDir, child.name), "SKILL.md")) {
       count++;
     }
   }
@@ -150,31 +166,35 @@ function isBetter(a: { relPath: string; count: number }, b: { relPath: string; c
   return a.relPath < b.relPath;
 }
 
-function lastPathSegment(relPath: string): string {
-  const parts = relPath.split("/");
-  return parts[parts.length - 1] ?? relPath;
-}
-
-function resolveAgentsContainer(repoRoot: string, dirs: readonly string[], list: DirLister): AgentsRef | null {
-  const score = (absDir: string): { absDir: string; relPath: string; count: number; files: string[] } => {
+function resolveAgentsContainer(
+  repoRoot: string,
+  dirs: readonly string[],
+  list: DirLister,
+  readFm: FrontmatterReader,
+): AgentsRef | null {
+  const score = (absDir: string): { absDir: string; relPath: string; count: number; files: string[]; hasSkillsChild: boolean } => {
     const files = list(absDir)
       .filter((e) => e.isFile && e.name.endsWith(".md") && e.name !== "SKILL.md")
       .map((e) => e.name)
-      .filter((f) => isAgentFile(join(absDir, f)))
+      .filter((f) => isAgentFile(join(absDir, f), readFm))
       .sort();
-    return { absDir, relPath: toRel(repoRoot, absDir), count: files.length, files };
+    return {
+      absDir,
+      relPath: toRel(repoRoot, absDir),
+      count: files.length,
+      files,
+      hasSkillsChild: dirContainsDir(list, absDir, "skills"),
+    };
   };
   // Conventional `agents/` dirs outrank arbitrary agent-shaped .md collections
   // (docs/, examples/) that would otherwise win on raw count and become the core
   // entry's git-subdir root. Scoring them first also skips parsing every other
   // .md in the repo on the common conventional layout.
   const named = dirs.filter((d) => lastPathSegment(toRel(repoRoot, d)) === "agents").map(score);
-  const bestNamed = pickBest(named);
-  if (bestNamed !== null) {
-    return { absDir: bestNamed.absDir, relPath: bestNamed.relPath, files: bestNamed.files };
-  }
-  const best = pickBest(dirs.map(score));
-  return best === null ? null : { absDir: best.absDir, relPath: best.relPath, files: best.files };
+  const best = pickBest(named) ?? pickBest(dirs.map(score));
+  return best === null
+    ? null
+    : { absDir: best.absDir, relPath: best.relPath, files: best.files, hasSkillsChild: best.hasSkillsChild };
 }
 
 function resolvePluginRoot(
@@ -183,7 +203,13 @@ function resolvePluginRoot(
   list: DirLister,
 ): { relPath: string } | null {
   const candidates = dirs
-    .filter((d) => list(join(d, ".claude-plugin")).some((e) => e.isFile && e.name === "plugin.json"))
+    .filter(
+      (d) =>
+        // Pre-filter on the parent's cached listing: probing a non-existent
+        // .claude-plugin child would pay a thrown-and-caught readdir per dir.
+        dirContainsDir(list, d, ".claude-plugin") &&
+        dirContainsFile(list, join(d, ".claude-plugin"), "plugin.json"),
+    )
     .map((d) => ({ relPath: toRel(repoRoot, d), count: 1 }));
   const best = pickBest(candidates);
   return best === null ? null : { relPath: best.relPath };
@@ -196,7 +222,7 @@ function resolveMcp(
   pluginRoot: { relPath: string } | null,
 ): McpRef | null {
   const files = dirs
-    .filter((d) => list(d).some((e) => e.isFile && e.name === ".mcp.json"))
+    .filter((d) => dirContainsFile(list, d, ".mcp.json"))
     .map((d) => ({ file: join(d, ".mcp.json"), relPath: toRel(repoRoot, join(d, ".mcp.json")) }))
     .sort((a, b) => preferUnder(pluginRoot, a.relPath, b.relPath));
   // Walk candidates in priority order: a malformed or non-MCP highest-priority
@@ -218,28 +244,6 @@ function resolveMcp(
   return null;
 }
 
-function resolveHooks(
-  repoRoot: string,
-  dirs: readonly string[],
-  list: DirLister,
-  pluginRoot: { relPath: string } | null,
-): { relPath: string } | null {
-  const files = dirs
-    .flatMap((d) => {
-      const hits: string[] = [];
-      if (list(join(d, "hooks")).some((e) => e.isFile && e.name === "hooks.json")) {
-        hits.push(toRel(repoRoot, join(d, "hooks", "hooks.json")));
-      }
-      if (list(d).some((e) => e.isFile && e.name === "hooks.json")) {
-        hits.push(toRel(repoRoot, join(d, "hooks.json")));
-      }
-      return hits;
-    })
-    .sort((a, b) => preferUnder(pluginRoot, a, b));
-  const chosen = files[0];
-  return chosen === undefined ? null : { relPath: chosen };
-}
-
 const ARTIFACT_DIR_KINDS = ["commands", "output-styles", "themes"] as const;
 
 function resolveArtifacts(
@@ -249,32 +253,49 @@ function resolveArtifacts(
   pluginRoot: { relPath: string } | null,
 ): ArtifactRef[] {
   const out: ArtifactRef[] = [];
+  // hooks and monitors share the two-location `<kind>/<kind>.json` | `<kind>.json` probe.
+  const hooks = resolveJsonFileArtifact(repoRoot, dirs, list, pluginRoot, "hooks");
+  if (hooks !== null) {
+    out.push({ kind: "hooks", relPath: hooks });
+  }
   for (const kind of ARTIFACT_DIR_KINDS) {
     const hits = dirs
-      .filter((d) => list(d).some((e) => e.isDirectory && e.name === kind))
+      .filter((d) => dirContainsDir(list, d, kind))
       .map((d) => toRel(repoRoot, join(d, kind)))
       .sort((a, b) => preferUnder(pluginRoot, a, b));
     if (hits[0] !== undefined) {
       out.push({ kind, relPath: hits[0] });
     }
   }
-  // monitors uses the hooks-style two-location file probe.
-  const monitorHits = dirs
-    .flatMap((d) => {
-      const hits: string[] = [];
-      if (list(join(d, "monitors")).some((e) => e.isFile && e.name === "monitors.json")) {
-        hits.push(toRel(repoRoot, join(d, "monitors", "monitors.json")));
-      }
-      if (list(d).some((e) => e.isFile && e.name === "monitors.json")) {
-        hits.push(toRel(repoRoot, join(d, "monitors.json")));
-      }
-      return hits;
-    })
-    .sort((a, b) => preferUnder(pluginRoot, a, b));
-  if (monitorHits[0] !== undefined) {
-    out.push({ kind: "monitors", relPath: monitorHits[0] });
+  const monitors = resolveJsonFileArtifact(repoRoot, dirs, list, pluginRoot, "monitors");
+  if (monitors !== null) {
+    out.push({ kind: "monitors", relPath: monitors });
   }
   return out;
+}
+
+/** Best `<dir>/<kind>/<kind>.json` or `<dir>/<kind>.json` hit, preferring the plugin root. */
+function resolveJsonFileArtifact(
+  repoRoot: string,
+  dirs: readonly string[],
+  list: DirLister,
+  pluginRoot: { relPath: string } | null,
+  kind: "hooks" | "monitors",
+): string | null {
+  const fileName = `${kind}.json`;
+  const hits = dirs
+    .flatMap((d) => {
+      const found: string[] = [];
+      if (dirContainsDir(list, d, kind) && dirContainsFile(list, join(d, kind), fileName)) {
+        found.push(toRel(repoRoot, join(d, kind, fileName)));
+      }
+      if (dirContainsFile(list, d, fileName)) {
+        found.push(toRel(repoRoot, join(d, fileName)));
+      }
+      return found;
+    })
+    .sort((a, b) => preferUnder(pluginRoot, a, b));
+  return hits[0] ?? null;
 }
 
 /** Sort comparator: paths under the plugin root come first, then shallower, then code-unit order. */
