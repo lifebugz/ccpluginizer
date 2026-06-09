@@ -29,3 +29,9 @@ export const MarkerFileSchema = v.strictObject({
 });
 
 export type MarkerFile = v.InferOutput<typeof MarkerFileSchema>;
+
+// The component fields of the schema above, kept adjacent so growing the schema
+// forces this list (the marker-mode classification authority) into the same diff.
+export const MARKER_COMPONENT_FIELDS = [
+  "skills", "agents", "commands", "hooks", "mcpServers", "outputStyles", "themes", "monitors",
+] as const satisfies readonly (keyof MarkerFile)[];

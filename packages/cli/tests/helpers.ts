@@ -128,6 +128,17 @@ export function captureStderr(fn: () => void): string {
   }
 }
 
+/** Async variant of captureStderr for awaited calls. */
+export async function captureStderrAsync(fn: () => Promise<unknown>): Promise<string> {
+  const spy = spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    await fn();
+    return spy.mock.calls.map((c) => c.map((a) => String(a)).join(" ")).join("\n");
+  } finally {
+    spy.mockRestore();
+  }
+}
+
 const CLI = join(import.meta.dirname, "../src/index.ts");
 
 /** Curated PATH so Bun.which("claude") is null inside the child (hermetic auto/llm detection). */

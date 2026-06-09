@@ -58,3 +58,14 @@ function toMeta(dir: string, fm: v.InferOutput<typeof SkillFrontmatterSchema>): 
     ...(fm.metadata?.product !== undefined ? { product: fm.metadata.product } : {}),
   };
 }
+
+/**
+ * Direct child dirs holding a SKILL.md, parse success or not — the coverage
+ * denominator for "skills the split silently dropped" accounting. Uses the same
+ * unfiltered child set as enumerateSkills, so the two counts are comparable.
+ */
+export function countSkillMdDirs(containerDir: string, list: DirLister = makeDirLister()): number {
+  return list(containerDir).filter(
+    (e) => e.isDirectory && dirContainsFile(list, join(containerDir, e.name), "SKILL.md"),
+  ).length;
+}

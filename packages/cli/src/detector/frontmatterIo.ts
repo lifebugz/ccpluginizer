@@ -4,7 +4,7 @@
 
 import { readFileSync } from "node:fs";
 import * as v from "valibot";
-import { AgentFrontmatterSchema } from "../schemas/frontmatter.ts";
+import { AgentFrontmatterSchema, SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
 import { extractFrontmatter } from "./yaml.ts";
 
 /** Read a file and extract its YAML frontmatter; null when unreadable or fence-less. */
@@ -37,4 +37,10 @@ export function makeFrontmatterReader(): FrontmatterReader {
 export function isAgentFile(filePath: string, readFm: FrontmatterReader = readFrontmatter): boolean {
   const fm = readFm(filePath);
   return fm !== null && v.safeParse(AgentFrontmatterSchema, fm).success;
+}
+
+/** Single authority for "is this a valid SKILL.md": frontmatter parses as a skill. */
+export function isSkillFile(filePath: string, readFm: FrontmatterReader = readFrontmatter): boolean {
+  const fm = readFm(filePath);
+  return fm !== null && v.safeParse(SkillFrontmatterSchema, fm).success;
 }

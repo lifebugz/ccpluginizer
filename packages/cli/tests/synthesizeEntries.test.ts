@@ -103,7 +103,7 @@ describe("synthesizeEntries: guarded split", () => {
       strategy: "metadata",
       minSkillsToSplit: 2,
     });
-    expect(res.split?.strategy).toBe("metadata");
+    expect(res.provenance).toEqual({ kind: "deterministic", strategy: "metadata" });
     expect(res.split?.groupCount).toBe(2);
   });
 });
@@ -253,7 +253,7 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
       minSkillsToSplit: 2,
     });
     expect(res.split).toBeNull();
-    expect(res.splitAttemptedButEmpty).toBe(true);
+    expect(res.attempted && res.split === null).toBe(true);
   });
 
   test("false on a successful split", async () => {
@@ -265,7 +265,7 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
       minSkillsToSplit: 2,
     });
     expect(res.split).not.toBeNull();
-    expect(res.splitAttemptedButEmpty).toBe(false);
+    expect(res.attempted && res.split === null).toBe(false);
   });
 
   test("false when sub-threshold (partitionSkills never called)", async () => {
@@ -274,7 +274,7 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
       sourceRepo: "test/skills-only",
     });
     expect(res.split).toBeNull();
-    expect(res.splitAttemptedButEmpty).toBe(false);
+    expect(res.attempted && res.split === null).toBe(false);
   });
 });
 
@@ -375,5 +375,53 @@ describe("synthesizeEntries: third-wave regressions", () => {
     const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/telnyx", strategy: "metadata", minSkillsToSplit: 2 });
     expect(res.split).not.toBeNull();
     expect(res.warnings.some((w) => w.includes("invalid SKILL.md frontmatter"))).toBe(true);
+  });
+});
+
+describe("synthesizeEntries: fourth-wave regressions", () => {
+  test("a valid skill named like a SKIP_DIR does not mask a broken skill's warning", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
+    const skillsDir = join(root, "providers", "claude", "plugin", "skills");
+    // valid skill in a SKIP_DIRS-named dir + a broken skill: the counts must not offset.
+    mkdirSync(join(skillsDir, "test"), { recursive: true });
+    writeFileSync(join(skillsDir, "test", "SKILL.md"), "---\ndescription: valid.\nmetadata:\n  product: messaging\n---\n");
+    mkdirSync(join(skillsDir, "broken"), { recursive: true });
+    writeFileSync(join(skillsDir, "broken", "SKILL.md"), "no frontmatter fence\n");
+    const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/telnyx", strategy: "metadata", minSkillsToSplit: 2 });
+    expect(res.split).not.toBeNull();
+    expect(res.warnings.some((w) => w.includes("invalid SKILL.md frontmatter"))).toBe(true);
+  });
+
+  test("core is refused when even the skills container has its own skills/ child", async () => {
+    const root = makeFlatSkillsRepo({ alpha: 4, beta: 4 });
+    // a skill dir literally named "skills" makes the container unsafe as a core root
+    mkdirSync(join(root, "skills", "skills"), { recursive: true });
+    writeFileSync(join(root, "skills", "skills", "SKILL.md"), "---\ndescription: meta.\nmetadata:\n  product: alpha\n---\n");
+    writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { x: { type: "http", url: "https://x" } } }));
+    const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/nested", strategy: "metadata", minSkillsToSplit: 2 });
+    expect(res.split).not.toBeNull();
+    expect(res.entries.find((e) => e.name.endsWith("-core"))).toBeUndefined();
+    expect(res.warnings.some((w) => w.includes("not carried by any emitted entry"))).toBe(true);
+  });
+
+  test("a voided marker neither bypasses the threshold nor steers the split's name", async () => {
+    const root = makeNestedPlugin({
+      products: { messaging: 13, voice: 13 }, // 26 >= default 25 threshold
+      marker: { name: "frozen-name", umbrella: true, groups: [{ slug: "gone", skills: ["./vanished/"] }] },
+    });
+    const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/telnyx", strategy: "metadata" });
+    // Above threshold the cascade may still split — but the voided marker's name,
+    // umbrella, and core curation must not drive it.
+    expect(res.split).not.toBeNull();
+    expect(res.provenance.kind).toBe("deterministic");
+    expect(res.entries.every((e) => !e.name.startsWith("frozen-name"))).toBe(true);
+    expect(res.split?.umbrellaEmitted).toBe(false);
+  });
+
+  test("the marker draft freezes core INTENT, not this scan's emittability", async () => {
+    const root = makeFlatSkillsRepo({ alpha: 4, beta: 4 }); // no agents, no MCP -> core impossible
+    const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/flat", strategy: "metadata", minSkillsToSplit: 2 });
+    expect(res.split?.coreEmitted).toBe(false);
+    expect(res.marker?.core).toBe(true); // a later scan that gains agents/MCP emits one again
   });
 });

@@ -1,12 +1,18 @@
 import * as v from "valibot";
 
-// Lenient string: a bare-numeric or boolean YAML scalar (e.g. a product slug like
-// `2024`) is coerced to its string form rather than rejected, so the skill is not
-// silently dropped during detection.
-const Stringy = v.pipe(v.union([v.string(), v.number(), v.boolean()]), v.transform(String));
-
 const isScalar = (val: unknown): val is string | number | boolean =>
   typeof val === "string" || typeof val === "number" || typeof val === "boolean";
+
+// Lenient string: a bare-numeric or boolean YAML scalar (e.g. a product slug like
+// `2024`), or a flow sequence of scalars (`description: [WIP]` is a legal YAML
+// array), is coerced to a string form rather than rejected, so the skill is not
+// silently dropped during detection.
+const Stringy = v.pipe(
+  v.custom<string | number | boolean | (string | number | boolean)[]>(
+    (val) => isScalar(val) || (Array.isArray(val) && val.length > 0 && val.every(isScalar)),
+  ),
+  v.transform((val) => (Array.isArray(val) ? val.map(String).join(", ") : String(val))),
+);
 
 // Advisory scalar (metadata.product): a clustering *hint*, not skill-identity. A
 // present-but-unusable shape (null, a map, a list — e.g. the zero-dep YAML parser

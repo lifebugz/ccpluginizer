@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { resolveSourceLayout } from "../src/detector/sourceLayout.ts";
+import { mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { createLayoutResolver, resolveSourceLayout } from "../src/detector/sourceLayout.ts";
+import { tempDir } from "./helpers.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
 
@@ -59,149 +59,139 @@ describe("resolveSourceLayout: repo-local MCP is flagged", () => {
 
 describe("resolveSourceLayout: filesystem robustness", () => {
   test("does not crash when a *.md entry is itself a directory", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-md-dir-"));
-    try {
-      mkdirSync(join(tmp, "skills", "foo"), { recursive: true });
-      writeFileSync(join(tmp, "skills", "foo", "SKILL.md"), "---\ndescription: x\n---\n");
-      // a directory whose name ends in .md sitting next to real content
-      mkdirSync(join(tmp, "weird.md"), { recursive: true });
-      const layout = resolveSourceLayout(tmp);
-      expect(layout.skillsContainer?.relPath).toBe("skills");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-md-dir-");
+    mkdirSync(join(tmp, "skills", "foo"), { recursive: true });
+    writeFileSync(join(tmp, "skills", "foo", "SKILL.md"), "---\ndescription: x\n---\n");
+    // a directory whose name ends in .md sitting next to real content
+    mkdirSync(join(tmp, "weird.md"), { recursive: true });
+    const layout = resolveSourceLayout(tmp);
+    expect(layout.skillsContainer?.relPath).toBe("skills");
   });
 
   test("a denser tests/fixtures skills dir does not out-rank the real skills/", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-skipdirs-"));
-    try {
-      // Real container: 1 skill.
-      mkdirSync(join(tmp, "skills", "real"), { recursive: true });
-      writeFileSync(join(tmp, "skills", "real", "SKILL.md"), "---\ndescription: real\n---\n");
-      // Fixture container: 3 skills — would win on count if not excluded.
-      for (const n of ["a", "b", "c"]) {
-        mkdirSync(join(tmp, "tests", "fixtures", n), { recursive: true });
-        writeFileSync(join(tmp, "tests", "fixtures", n, "SKILL.md"), "---\ndescription: fixture\n---\n");
-      }
-      const layout = resolveSourceLayout(tmp);
-      expect(layout.skillsContainer?.relPath).toBe("skills");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
+    const tmp = tempDir("ccp-skipdirs-");
+    // Real container: 1 skill.
+    mkdirSync(join(tmp, "skills", "real"), { recursive: true });
+    writeFileSync(join(tmp, "skills", "real", "SKILL.md"), "---\ndescription: real\n---\n");
+    // Fixture container: 3 skills — would win on count if not excluded.
+    for (const n of ["a", "b", "c"]) {
+      mkdirSync(join(tmp, "tests", "fixtures", n), { recursive: true });
+      writeFileSync(join(tmp, "tests", "fixtures", n, "SKILL.md"), "---\ndescription: fixture\n---\n");
     }
+    const layout = resolveSourceLayout(tmp);
+    expect(layout.skillsContainer?.relPath).toBe("skills");
   });
 });
 
 describe("resolveSourceLayout: MCP robustness", () => {
   test("falls through a malformed higher-priority .mcp.json to a valid anchored one", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-fallthrough-"));
-    try {
-      // Root .mcp.json (shallowest → chosen first) is malformed; the valid one sits
-      // in the other anchored location, .claude/.
-      writeFileSync(join(tmp, ".mcp.json"), "{ not valid json");
-      mkdirSync(join(tmp, ".claude"), { recursive: true });
-      writeFileSync(
-        join(tmp, ".claude", ".mcp.json"),
-        JSON.stringify({ mcpServers: { telnyx: { type: "http", url: "https://x" } } }),
-      );
-      const layout = resolveSourceLayout(tmp);
-      expect(layout.mcp?.relPath).toBe(".claude/.mcp.json");
-      expect(layout.mcp?.serverType).toBe("remote");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-mcp-fallthrough-");
+    // Root .mcp.json (shallowest → chosen first) is malformed; the valid one sits
+    // in the other anchored location, .claude/.
+    writeFileSync(join(tmp, ".mcp.json"), "{ not valid json");
+    mkdirSync(join(tmp, ".claude"), { recursive: true });
+    writeFileSync(
+      join(tmp, ".claude", ".mcp.json"),
+      JSON.stringify({ mcpServers: { telnyx: { type: "http", url: "https://x" } } }),
+    );
+    const layout = resolveSourceLayout(tmp);
+    expect(layout.mcp?.relPath).toBe(".claude/.mcp.json");
+    expect(layout.mcp?.serverType).toBe("remote");
   });
 
   test("a stray example .mcp.json outside anchored locations is never inlined", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-stray-"));
-    try {
-      mkdirSync(join(tmp, "examples", "local-server"), { recursive: true });
-      writeFileSync(
-        join(tmp, "examples", "local-server", ".mcp.json"),
-        JSON.stringify({ mcpServers: { demo: { command: "node", args: ["./server.js"] } } }),
-      );
-      expect(resolveSourceLayout(tmp).mcp).toBeNull();
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-mcp-stray-");
+    mkdirSync(join(tmp, "examples", "local-server"), { recursive: true });
+    writeFileSync(
+      join(tmp, "examples", "local-server", ".mcp.json"),
+      JSON.stringify({ mcpServers: { demo: { command: "node", args: ["./server.js"] } } }),
+    );
+    expect(resolveSourceLayout(tmp).mcp).toBeNull();
   });
 
   test("ignores a .mcp.json that is not a server map (e.g. {$schema, version})", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-nonserver-"));
-    try {
-      writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ $schema: "https://x", version: 1 }));
-      expect(resolveSourceLayout(tmp).mcp).toBeNull();
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-mcp-nonserver-");
+    writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ $schema: "https://x", version: 1 }));
+    expect(resolveSourceLayout(tmp).mcp).toBeNull();
   });
 
   test("ignores an array-valued mcpServers (cannot be inlined as a servers object)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-array-"));
-    try {
-      writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ mcpServers: [{ command: "x" }] }));
-      expect(resolveSourceLayout(tmp).mcp).toBeNull();
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-mcp-array-");
+    writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ mcpServers: [{ command: "x" }] }));
+    expect(resolveSourceLayout(tmp).mcp).toBeNull();
   });
 });
 
 describe("resolveSourceLayout: classification edges", () => {
   test("generic env interpolation (API keys) does not classify a server repo-local", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-env-"));
-    try {
-      writeFileSync(
-        join(tmp, ".mcp.json"),
-        JSON.stringify({
-          mcpServers: {
-            scoped: { command: "npx", args: ["-y", "@scope/mcp", "--header", "Authorization: ${API_KEY}"] },
-          },
-        }),
-      );
-      expect(resolveSourceLayout(tmp).mcp?.serverType).toBe("package");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-mcp-env-");
+    writeFileSync(
+      join(tmp, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          scoped: { command: "npx", args: ["-y", "@scope/mcp", "--header", "Authorization: ${API_KEY}"] },
+        },
+      }),
+    );
+    expect(resolveSourceLayout(tmp).mcp?.serverType).toBe("package");
   });
 
   test("CLAUDE_PLUGIN_ROOT expansion still classifies a server repo-local", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-mcp-root-"));
-    try {
-      writeFileSync(
-        join(tmp, ".mcp.json"),
-        JSON.stringify({
-          mcpServers: { local: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server.js"] } },
-        }),
-      );
-      expect(resolveSourceLayout(tmp).mcp?.serverType).toBe("repo-local");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-mcp-root-");
+    writeFileSync(
+      join(tmp, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: { local: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server.js"] } },
+      }),
+    );
+    expect(resolveSourceLayout(tmp).mcp?.serverType).toBe("repo-local");
   });
 
   test("a src/commands code directory is not reported as a commands artifact", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-srccmd-"));
-    try {
-      mkdirSync(join(tmp, "src", "commands"), { recursive: true });
-      writeFileSync(join(tmp, "src", "commands", "scan.ts"), "// code");
-      mkdirSync(join(tmp, "skills", "a"), { recursive: true });
-      writeFileSync(join(tmp, "skills", "a", "SKILL.md"), "---\ndescription: a.\n---\n");
-      const layout = resolveSourceLayout(tmp);
-      expect(layout.artifacts.find((a) => a.kind === "commands")).toBeUndefined();
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-srccmd-");
+    mkdirSync(join(tmp, "src", "commands"), { recursive: true });
+    writeFileSync(join(tmp, "src", "commands", "scan.ts"), "// code");
+    mkdirSync(join(tmp, "skills", "a"), { recursive: true });
+    writeFileSync(join(tmp, "skills", "a", "SKILL.md"), "---\ndescription: a.\n---\n");
+    const layout = resolveSourceLayout(tmp);
+    expect(layout.artifacts.find((a) => a.kind === "commands")).toBeUndefined();
   });
 
   test("a root-level commands directory IS reported as an artifact", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-rootcmd-"));
-    try {
-      mkdirSync(join(tmp, "commands"), { recursive: true });
-      writeFileSync(join(tmp, "commands", "do.md"), "---\ndescription: Do.\n---\n");
-      const layout = resolveSourceLayout(tmp);
-      expect(layout.artifacts.find((a) => a.kind === "commands")?.relPath).toBe("commands");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
+    const tmp = tempDir("ccp-rootcmd-");
+    mkdirSync(join(tmp, "commands"), { recursive: true });
+    writeFileSync(join(tmp, "commands", "do.md"), "---\ndescription: Do.\n---\n");
+    const layout = resolveSourceLayout(tmp);
+    expect(layout.artifacts.find((a) => a.kind === "commands")?.relPath).toBe("commands");
+  });
+});
+
+describe("resolveSourceLayout: symlink aliasing", () => {
+  test("a symlink alias of the skills dir is neither double-counted nor chosen as root", () => {
+    const tmp = tempDir("ccp-symalias-");
+    for (const n of ["alpha", "beta", "gamma"]) {
+      mkdirSync(join(tmp, "skills", n), { recursive: true });
+      writeFileSync(join(tmp, "skills", n, "SKILL.md"), `---\ndescription: ${n}.\n---\n`);
     }
+    // "examples" sorts before "skills" — without the alias guard it would win the tie.
+    symlinkSync(join(tmp, "skills"), join(tmp, "examples"));
+    const resolver = createLayoutResolver(tmp);
+    expect(resolver.skillsContainer?.relPath).toBe("skills"); // the real path wins
+    expect(resolver.skillDirsOutsideContainer).toBe(0); // no phantom duplicate count
+  });
+});
+
+describe("resolveSourceLayout: anchored configs under a plugin root", () => {
+  test("a stray .mcp.json nested below the plugin root is not inlined", () => {
+    const tmp = tempDir("ccp-nestedmcp-");
+    const plugin = join(tmp, "plugin");
+    mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "x" }));
+    mkdirSync(join(plugin, "examples", "demo"), { recursive: true });
+    writeFileSync(
+      join(plugin, "examples", "demo", ".mcp.json"),
+      JSON.stringify({ mcpServers: { demo: { command: "node", args: ["./server.js"] } } }),
+    );
+    expect(resolveSourceLayout(tmp).mcp).toBeNull();
   });
 });

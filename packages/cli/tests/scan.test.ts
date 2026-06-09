@@ -307,3 +307,21 @@ describe("scan CLI: third-wave regressions", () => {
     expect(stderr).toMatch(/--umbrella is ignored with --no-split/);
   }, 30_000);
 });
+
+describe("scan CLI: fourth-wave regressions", () => {
+  test("--out-dir= (empty value) behaves like an absent flag, not mkdir('')", async () => {
+    const { stdout, code } = await runScan([join(FIXTURES, "skills-only"), "--out-dir="]);
+    expect(code).toBe(0);
+    expect(() => {
+      JSON.parse(stdout); // fell back to stdout emission
+    }).not.toThrow();
+  }, 30_000);
+
+  test("a forced deterministic strategy that finds no partition explains itself", async () => {
+    const root = makeNestedPlugin({ products: { solo: 30 } });
+    const { stderr, stdout, code } = await runScan([root, "--cluster=metadata", "--min-skills=2"]);
+    expect(code).toBe(0);
+    expect(stderr).toMatch(/--cluster=metadata produced no split — no clean deterministic partition/);
+    expect(Array.isArray(JSON.parse(stdout))).toBe(false); // single entry
+  }, 30_000);
+});

@@ -125,6 +125,14 @@ describe("SkillFrontmatterSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  test("a flow-sequence description ([WIP]) is coerced, not dropped", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, { description: ["WIP"] });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.description).toBe("WIP");
+    }
+  });
+
   test("rejects frontmatter without description (it's the marker for skill-shape)", () => {
     const result = v.safeParse(SkillFrontmatterSchema, { name: "foo" });
     expect(result.success).toBe(false);

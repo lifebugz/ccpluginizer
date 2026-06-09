@@ -81,44 +81,57 @@ export interface WalkOptions {
 /** Depth-first walk from root (root itself visits onDir), skipping skipDirs by name. */
 export function walkTree(root: string, options: WalkOptions): void {
   const list = options.list ?? makeDirLister();
-  // Cycle guard: the lister follows symlinks, so a link to an ancestor would
-  // otherwise re-traverse the tree until the kernel's resolution limit. A cycle can
-  // only enter via a symlink, so only symlinked directories pay the identity stat.
+  // Cycle/alias guard: the lister follows symlinks, so a link to an ancestor (or a
+  // sibling alias of an already-walked dir) would otherwise be re-traversed and
+  // double-counted. Every directory registers its dev:ino identity, and real
+  // directories are visited before symlinked ones so the real path wins aliasing.
   const seen = new Set<string>();
-  const visit = (dir: string, viaSymlink: boolean): void => {
-    if (viaSymlink) {
-      let id: string;
-      try {
-        const st = statSync(dir);
-        id = `${String(st.dev)}:${String(st.ino)}`;
-      } catch {
-        return; // vanished / unreadable — skip
-      }
-      if (seen.has(id)) {
-        return;
-      }
-      seen.add(id);
+  const visit = (dir: string): void => {
+    let id: string;
+    try {
+      const st = statSync(dir);
+      id = `${String(st.dev)}:${String(st.ino)}`;
+    } catch {
+      return; // vanished / unreadable — skip
     }
+    if (seen.has(id)) {
+      return;
+    }
+    seen.add(id);
     options.onDir?.(dir);
-    for (const entry of list(dir)) {
-      if (options.skipDirs.has(entry.name)) {
-        continue;
+    const entries = list(dir).filter((e) => !options.skipDirs.has(e.name));
+    for (const entry of entries) {
+      if (entry.isFile) {
+        options.onFile?.(join(dir, entry.name));
       }
-      const full = join(dir, entry.name);
-      if (entry.isDirectory) {
-        visit(full, viaSymlink || entry.isSymlink);
-      } else if (entry.isFile) {
-        options.onFile?.(full);
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory && !entry.isSymlink) {
+        visit(join(dir, entry.name));
+      }
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory && entry.isSymlink) {
+        visit(join(dir, entry.name));
       }
     }
   };
-  visit(root, false);
+  visit(root);
 }
 
-/** Read + JSON.parse with a uniform "Invalid JSON in <file>" failure message. */
+/**
+ * Read + JSON.parse with uniform failure messages. Read failures and parse failures
+ * are reported distinctly — an EACCES must not masquerade as "Invalid JSON".
+ */
 export function readJsonFile(file: string): unknown {
+  let raw: string;
   try {
-    return JSON.parse(readFileSync(file, "utf8"));
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    throw new Error(`Cannot read ${file}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+  }
+  try {
+    return JSON.parse(raw);
   } catch (e) {
     throw new Error(`Invalid JSON in ${file}: ${e instanceof Error ? e.message : String(e)}`, {
       cause: e,

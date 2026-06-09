@@ -4,18 +4,26 @@ import type { ComponentKind, Finding } from "./types.ts";
 
 type FolderEmit = "directory" | { readonly enumerateFiles: string };
 
+// The single source of the non-skill artifact conventions, shared with
+// sourceLayout's split-time artifact resolver.
+export const ARTIFACT_DIR_FOLDERS = ["commands", "output-styles", "themes"] as const;
+export const ARTIFACT_JSON_KINDS = ["hooks", "monitors"] as const;
+
+const ARTIFACT_FOLDER_KIND: Record<(typeof ARTIFACT_DIR_FOLDERS)[number], ComponentKind> = {
+  commands: "commands",
+  "output-styles": "outputStyles",
+  themes: "themes",
+};
+
 const FOLDER_KINDS: readonly { folder: string; kind: ComponentKind; emit: FolderEmit }[] = [
   { folder: "skills", kind: "skills", emit: "directory" },
   { folder: "agents", kind: "agents", emit: { enumerateFiles: ".md" } },
-  { folder: "commands", kind: "commands", emit: "directory" },
-  { folder: "output-styles", kind: "outputStyles", emit: "directory" },
-  { folder: "themes", kind: "themes", emit: "directory" },
+  ...ARTIFACT_DIR_FOLDERS.map((folder) => ({ folder, kind: ARTIFACT_FOLDER_KIND[folder], emit: "directory" as const })),
 ];
 
 const FILE_KINDS: readonly { file: string; kind: ComponentKind }[] = [
-  { file: "hooks/hooks.json", kind: "hooks" },
+  ...ARTIFACT_JSON_KINDS.map((kind) => ({ file: `${kind}/${kind}.json`, kind })),
   { file: ".mcp.json", kind: "mcpServers" },
-  { file: "monitors/monitors.json", kind: "monitors" },
 ];
 
 export function detectConventions(repoRoot: string): readonly Finding[] {

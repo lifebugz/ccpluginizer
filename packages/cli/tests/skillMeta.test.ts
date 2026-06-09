@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { enumerateSkills } from "../src/detector/skillMeta.ts";
+import { tempDir } from "./helpers.ts";
 
 const CONTAINER = join(import.meta.dirname, "fixtures", "telnyx-like", "skills");
 
@@ -17,16 +17,12 @@ describe("enumerateSkills", () => {
   });
 
   test("skips a broken symlink instead of crashing the scan", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-brokenlink-"));
-    try {
-      mkdirSync(join(tmp, "real"), { recursive: true });
-      writeFileSync(join(tmp, "real", "SKILL.md"), "---\ndescription: real\n---\n");
-      symlinkSync(join(tmp, "does-not-exist"), join(tmp, "brokenlink"));
-      const skills = enumerateSkills(tmp);
-      expect(skills.map((s) => s.dir)).toEqual(["real"]);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-brokenlink-");
+    mkdirSync(join(tmp, "real"), { recursive: true });
+    writeFileSync(join(tmp, "real", "SKILL.md"), "---\ndescription: real\n---\n");
+    symlinkSync(join(tmp, "does-not-exist"), join(tmp, "brokenlink"));
+    const skills = enumerateSkills(tmp);
+    expect(skills.map((s) => s.dir)).toEqual(["real"]);
   });
 
   test("returns results sorted by dir for determinism", () => {
@@ -66,16 +62,12 @@ describe("enumerateSkills", () => {
   });
 
   test("skips (does not crash) a skill whose SKILL.md is itself a directory", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-eisdir-"));
-    try {
-      // a valid skill plus a malformed one whose SKILL.md is a directory
-      mkdirSync(join(tmp, "good"), { recursive: true });
-      writeFileSync(join(tmp, "good", "SKILL.md"), "---\ndescription: ok\n---\n");
-      mkdirSync(join(tmp, "weird", "SKILL.md"), { recursive: true });
-      const skills = enumerateSkills(tmp);
-      expect(skills.map((s) => s.dir)).toEqual(["good"]);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-eisdir-");
+    // a valid skill plus a malformed one whose SKILL.md is a directory
+    mkdirSync(join(tmp, "good"), { recursive: true });
+    writeFileSync(join(tmp, "good", "SKILL.md"), "---\ndescription: ok\n---\n");
+    mkdirSync(join(tmp, "weird", "SKILL.md"), { recursive: true });
+    const skills = enumerateSkills(tmp);
+    expect(skills.map((s) => s.dir)).toEqual(["good"]);
   });
 });

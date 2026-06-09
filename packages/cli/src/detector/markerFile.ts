@@ -4,14 +4,7 @@ import * as v from "valibot";
 import { MarkerFileError } from "../errors.ts";
 import { readJsonFile } from "./fsWalk.ts";
 import type { MarkerFile } from "../schemas/markerFile.ts";
-import { MarkerFileSchema } from "../schemas/markerFile.ts";
-
-// The single classification authority for marker modes — every consumer (split
-// suppression, the single-entry freeze-only carve-out) derives from this list, so
-// growing MarkerFileSchema cannot silently reclassify a marker.
-const MARKER_COMPONENT_FIELDS = [
-  "skills", "agents", "commands", "hooks", "mcpServers", "outputStyles", "themes", "monitors",
-] as const;
+import { MARKER_COMPONENT_FIELDS, MarkerFileSchema } from "../schemas/markerFile.ts";
 
 function hasComponentCuration(marker: MarkerFile): boolean {
   return MARKER_COMPONENT_FIELDS.some((key) => marker[key] !== undefined);

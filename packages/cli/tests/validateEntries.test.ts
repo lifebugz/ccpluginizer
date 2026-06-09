@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { validateEntries, collectEntries } from "../src/detector/validateEntries.ts";
+import { tempDir } from "./helpers.ts";
 
 describe("collectEntries: friendly errors", () => {
   test("throws a clear message for a missing path (not raw ENOENT)", () => {
@@ -12,42 +13,30 @@ describe("collectEntries: friendly errors", () => {
   });
 
   test("throws a clear message for malformed JSON (not a raw parse stack)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-badjson-"));
-    try {
-      const file = join(tmp, "bad.json");
-      writeFileSync(file, "{ not valid json");
-      expect(() => collectEntries(file)).toThrow(/Invalid JSON/i);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-badjson-");
+    const file = join(tmp, "bad.json");
+    writeFileSync(file, "{ not valid json");
+    expect(() => collectEntries(file)).toThrow(/Invalid JSON/i);
   });
 
   test("throws for a directory with no entry JSON files (no silent empty pass)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-emptydir-"));
-    try {
-      writeFileSync(join(tmp, "README.md"), "not an entry");
-      expect(() => collectEntries(tmp)).toThrow(/No entry JSON files/i);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-emptydir-");
+    writeFileSync(join(tmp, "README.md"), "not an entry");
+    expect(() => collectEntries(tmp)).toThrow(/No entry JSON files/i);
   });
 
   test("flattens an array-shaped JSON file inside a directory (entry-by-entry, like the single-file path)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-arrdir-"));
-    try {
-      const entries = [
-        { name: "a", source: { source: "github", repo: "x/y" } },
-        { name: "b", source: { source: "github", repo: "x/y" } },
-      ];
-      writeFileSync(join(tmp, "entries.json"), JSON.stringify(entries));
-      const { items, sources } = collectEntries(tmp);
-      expect(items).toHaveLength(2);
-      expect(sources).toEqual(["entries.json[0]", "entries.json[1]"]);
-      // The validator must see two real entries, not one (non-conforming) array element.
-      expect(validateEntries(items, sources).ok).toBe(true);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-arrdir-");
+    const entries = [
+      { name: "a", source: { source: "github", repo: "x/y" } },
+      { name: "b", source: { source: "github", repo: "x/y" } },
+    ];
+    writeFileSync(join(tmp, "entries.json"), JSON.stringify(entries));
+    const { items, sources } = collectEntries(tmp);
+    expect(items).toHaveLength(2);
+    expect(sources).toEqual(["entries.json[0]", "entries.json[1]"]);
+    // The validator must see two real entries, not one (non-conforming) array element.
+    expect(validateEntries(items, sources).ok).toBe(true);
   });
 });
 
@@ -94,29 +83,21 @@ describe("validateEntries", () => {
 
 describe("collectEntries: empty artifacts are rejected", () => {
   test("a file containing [] fails instead of passing as OK (0 entries)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-empty-"));
-    try {
-      const file = join(tmp, "empty.json");
-      writeFileSync(file, "[]\n");
-      expect(() => collectEntries(file)).toThrow(/No entries found/);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-empty-");
+    const file = join(tmp, "empty.json");
+    writeFileSync(file, "[]\n");
+    expect(() => collectEntries(file)).toThrow(/No entries found/);
   });
 });
 
 describe("validateEntries: error provenance", () => {
   test("a broken entry in a directory is attributed to its file, not a flat index", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "ccp-attrib-"));
-    try {
-      writeFileSync(join(tmp, "good.json"), JSON.stringify({ name: "good", source: { source: "github", repo: "a/b" } }));
-      writeFileSync(join(tmp, "broken.json"), JSON.stringify({ name: "BAD NAME", source: { source: "github", repo: "a/b" } }));
-      const { items, sources } = collectEntries(tmp);
-      const r = validateEntries(items, sources);
-      expect(r.ok).toBe(false);
-      expect(r.errors.some((e) => e.includes("broken.json"))).toBe(true);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const tmp = tempDir("ccp-attrib-");
+    writeFileSync(join(tmp, "good.json"), JSON.stringify({ name: "good", source: { source: "github", repo: "a/b" } }));
+    writeFileSync(join(tmp, "broken.json"), JSON.stringify({ name: "BAD NAME", source: { source: "github", repo: "a/b" } }));
+    const { items, sources } = collectEntries(tmp);
+    const r = validateEntries(items, sources);
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes("broken.json"))).toBe(true);
   });
 });

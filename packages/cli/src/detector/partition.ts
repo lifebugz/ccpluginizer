@@ -25,8 +25,7 @@ export const DEFAULT_STRATEGY: ClusterStrategy = "auto";
 export function strategyUsesLlm(strategy: ClusterStrategy): boolean {
   return strategy === "llm" || strategy === "auto-llm";
 }
-/** Strategy actually used to produce a result. */
-export type ResolvedStrategy = "marker" | "llm" | "metadata" | "directory" | "name-prefix";
+export type DeterministicStrategy = "metadata" | "directory" | "name-prefix";
 
 export type BackendKind = "subprocess" | "claude";
 
@@ -34,28 +33,34 @@ export type BackendKind = "subprocess" | "claude";
 export interface GrouperRun {
   readonly kind: BackendKind;
   readonly groups: RawGroup[];
+  /** Invoked by the orchestrator when the grouping passes the gate (e.g. to commit a cache write). */
+  readonly commit?: () => void;
 }
 
 /** Injected LLM grouper; resolves its backend lazily — null means none was found. */
 export type GroupSkillsFn = (skills: readonly SkillMeta[]) => Promise<GrouperRun | null>;
 
-/** What the LLM step did — owned here, where the step runs, so notices report facts. */
-export type LlmOutcome =
-  | { readonly step: "not-invoked" }
+/** How the LLM step failed, when it ran and lost. */
+export type LlmFailure =
   | { readonly step: "no-backend" }
-  | { readonly step: "no-output"; readonly kind: BackendKind }
-  | { readonly step: "gate-rejected"; readonly kind: BackendKind }
-  | { readonly step: "won"; readonly kind: BackendKind };
+  | { readonly step: "no-output"; readonly backend: BackendKind }
+  | { readonly step: "gate-rejected"; readonly backend: BackendKind };
 
-export interface PartitionResult {
-  readonly strategy: ResolvedStrategy;
-  readonly groups: Grouping;
-}
+/**
+ * The single provenance fact for an outcome — owned here, where every step runs, so
+ * notices pattern-match reported facts instead of re-deriving them from field pairs.
+ */
+export type SplitProvenance =
+  | { readonly kind: "marker" }
+  | { readonly kind: "llm"; readonly backend: BackendKind }
+  | { readonly kind: "deterministic"; readonly strategy: DeterministicStrategy; readonly llmFailure?: LlmFailure }
+  | { readonly kind: "none"; readonly llmFailure?: LlmFailure };
 
 export interface PartitionOutcome {
-  readonly result: PartitionResult | null;
-  readonly llm: LlmOutcome;
-  /** Advisory messages (e.g. stale committed-marker paths) — surfaced even when result is null. */
+  /** Non-null exactly when provenance.kind !== "none". */
+  readonly groups: Grouping | null;
+  readonly provenance: SplitProvenance;
+  /** Advisory messages (e.g. stale committed-marker paths) — surfaced even when groups is null. */
   readonly warnings: readonly string[];
 }
 
@@ -69,6 +74,8 @@ export interface PartitionOptions {
   readonly strategy?: ClusterStrategy;
   readonly markerGroups?: readonly MarkerGroup[];
   readonly group?: GroupSkillsFn;
+  /** Skip the LLM step entirely (used when only a marker-driven result could be honored). */
+  readonly suppressLlm?: boolean;
 }
 
 // Acceptance gate constants.
@@ -201,10 +208,8 @@ function appendToMisc(keep: readonly KeyedBucket[], extra: SkillMeta[]): KeyedBu
   return [...keep, { key: MISC, skills: extra }];
 }
 
+/** Precondition: groups.length > maxK (only called from collapseToFit's tail). */
 function mergeSmallestIntoMisc(groups: readonly KeyedBucket[], maxK: number): KeyedBucket[] {
-  if (groups.length <= maxK) {
-    return [...groups];
-  }
   const sorted = [...groups].sort(
     (a, b) => a.skills.length - b.skills.length || byCodeUnit(a.key, b.key),
   );
@@ -283,15 +288,6 @@ function gateRaw(skills: readonly SkillMeta[], raw: readonly RawGroup[]): Groupi
   return acceptRawGroups(mapRawGroups(skills, raw), skills.length);
 }
 
-/**
- * Would this raw grouping pass the verbatim acceptance gate? Backends use this to
- * avoid caching a parseable-but-rejected response, which would otherwise be replayed
- * from cache forever and permanently disable the LLM rescue for that skill set.
- */
-export function rawGroupsAcceptable(skills: readonly SkillMeta[], raw: readonly RawGroup[]): boolean {
-  return gateRaw(skills, validRawItems(raw)) !== null;
-}
-
 interface MarkerMatch {
   /** Matched groups only (unfinalized, no misc bucket). */
   readonly groups: SkillGroup[];
@@ -359,7 +355,7 @@ const deterministicFns: Record<
 /** Try metadata → directory → name-prefix; return the first gated grouping (tagged), else null. */
 function deterministicCascade(
   skills: readonly SkillMeta[],
-): { strategy: ResolvedStrategy; groups: Grouping } | null {
+): { strategy: DeterministicStrategy; groups: Grouping } | null {
   for (const name of ["metadata", "directory", "name-prefix"] as const) {
     const groups = deterministicFns[name](skills);
     if (groups !== null) {
@@ -379,8 +375,17 @@ export async function partitionSkills(
 ): Promise<PartitionOutcome> {
   const strategy = options.strategy ?? DEFAULT_STRATEGY;
   const warnings: string[] = [];
-  let llm: LlmOutcome = { step: "not-invoked" };
-  const finish = (result: PartitionResult | null): PartitionOutcome => ({ result, llm, warnings });
+  let llmFailure: LlmFailure | undefined;
+  const deterministic = (
+    d: { strategy: DeterministicStrategy; groups: Grouping } | null,
+  ): PartitionOutcome =>
+    d === null
+      ? { groups: null, provenance: { kind: "none", ...(llmFailure !== undefined ? { llmFailure } : {}) }, warnings }
+      : {
+          groups: d.groups,
+          provenance: { kind: "deterministic", strategy: d.strategy, ...(llmFailure !== undefined ? { llmFailure } : {}) },
+          warnings,
+        };
 
   // A committed marker grouping wins verbatim — but only when it actually matches.
   if (options.markerGroups !== undefined && options.markerGroups.length > 0) {
@@ -412,51 +417,61 @@ export async function partitionSkills(
         );
         groups = [...matched, { slug: MISC, skills: leftover }];
       }
-      return finish({ strategy: "marker", groups: finalizeGroups(groups) });
+      return { groups: finalizeGroups(groups), provenance: { kind: "marker" }, warnings };
     }
   }
 
-  const runLlm = async (): Promise<Grouping | null> => {
+  const runLlm = async (): Promise<{ backend: BackendKind; groups: Grouping } | null> => {
+    if (options.suppressLlm === true) {
+      return null; // deliberately not invoked — no failure to report
+    }
     if (options.group === undefined) {
-      llm = { step: "no-backend" };
+      llmFailure = { step: "no-backend" };
       return null;
     }
     const run = await options.group(skills);
     if (run === null) {
-      llm = { step: "no-backend" };
+      llmFailure = { step: "no-backend" };
       return null;
     }
     const raw = validRawItems(run.groups);
     if (raw.length === 0) {
-      llm = { step: "no-output", kind: run.kind };
+      llmFailure = { step: "no-output", backend: run.kind };
       return null;
     }
     const gated = gateRaw(skills, raw);
-    llm = gated === null ? { step: "gate-rejected", kind: run.kind } : { step: "won", kind: run.kind };
-    return gated;
+    if (gated === null) {
+      llmFailure = { step: "gate-rejected", backend: run.kind };
+      return null;
+    }
+    run.commit?.();
+    return { backend: run.kind, groups: gated };
   };
 
   if (strategy === "auto") {
-    return finish(deterministicCascade(skills));
+    return deterministic(deterministicCascade(skills));
   }
 
   if (strategy === "llm") {
-    const accepted = await runLlm();
-    if (accepted !== null) {
-      return finish({ strategy: "llm", groups: accepted });
+    const won = await runLlm();
+    if (won !== null) {
+      return { groups: won.groups, provenance: { kind: "llm", backend: won.backend }, warnings };
     }
-    return finish(deterministicCascade(skills));
+    return deterministic(deterministicCascade(skills));
   }
 
   if (strategy === "auto-llm") {
-    const deterministic = deterministicCascade(skills);
-    if (deterministic !== null) {
-      return finish(deterministic);
+    const d = deterministicCascade(skills);
+    if (d !== null) {
+      return deterministic(d);
     }
-    const accepted = await runLlm();
-    return finish(accepted === null ? null : { strategy: "llm", groups: accepted });
+    const won = await runLlm();
+    if (won !== null) {
+      return { groups: won.groups, provenance: { kind: "llm", backend: won.backend }, warnings };
+    }
+    return deterministic(null);
   }
 
   const groups = deterministicFns[strategy](skills);
-  return finish(groups === null ? null : { strategy, groups });
+  return deterministic(groups === null ? null : { strategy, groups });
 }

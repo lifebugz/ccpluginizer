@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as v from "valibot";
-import { rawGroupsAcceptable, type BackendKind } from "../detector/partition.ts";
+import type { BackendKind } from "../detector/partition.ts";
 import { RawGroupSchema, RawGroupsSchema, type RawGroup } from "../schemas/rawGroups.ts";
 import type { SkillMeta } from "../detector/skillMeta.ts";
 
@@ -26,8 +26,15 @@ export type SpawnRun = (
   options: { input?: string; maxBuffer: number; timeout: number },
 ) => SpawnResult | Promise<SpawnResult>;
 
+/** One backend invocation: parsed groups plus a commit hook for gate-passing results. */
+export interface BackendRun {
+  readonly groups: RawGroup[];
+  /** Persists the result (cache write); the partition orchestrator calls it iff the gate passes. */
+  readonly commit?: () => void;
+}
+
 /** A backend's grouping function — the resolved backend IS the kind, so it returns raw groups. */
-export type BackendGroupFn = (skills: readonly SkillMeta[]) => Promise<RawGroup[]>;
+export type BackendGroupFn = (skills: readonly SkillMeta[]) => Promise<BackendRun>;
 
 export interface ResolvedGrouper {
   readonly fn: BackendGroupFn;
@@ -237,6 +244,11 @@ function spawnGroupRun(
       for (const t of timers) {
         clearTimeout(t);
       }
+      // Reap any process-group survivors (a grandchild holding the inherited stdout
+      // pipe) and release our end of the pipe; on a clean exit the group is already
+      // gone and the kill is a caught ESRCH no-op.
+      killTree("SIGKILL");
+      child.stdout?.destroy();
       cleanupForwarders();
       resolve(result);
     };
@@ -330,7 +342,9 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
         : undefined;
     return {
       fn: makeCachedGrouper(
-        cmd,
+        // Namespaced: --llm-cmd "claude" (a shell command) must not share cache
+        // entries with the built-in claude backend (direct argv invocation).
+        `cmd:${cmd}`,
         cacheDirFn,
         (prompt) =>
           run(shell, shellArgs, {
@@ -357,7 +371,7 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
       // The prompt goes on stdin, not argv: one line per skill at hundreds of skills
       // exceeds the OS per-argument limit (E2BIG), which would silently disable the
       // claude backend on exactly the repos that most need the rescue.
-      fn: makeCachedGrouper("claude", cacheDirFn, (prompt) =>
+      fn: makeCachedGrouper("claude-cli", cacheDirFn, (prompt) =>
         run(cmd, cmdArgs, {
           input: prompt,
           maxBuffer: MAX_BUFFER_BYTES,
@@ -372,50 +386,55 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
   return null;
 }
 
-/** The shared backend pipeline: cache read → invoke → parse → gate-checked cache write. */
+/** The shared backend pipeline: cache read → invoke → parse → commit-on-acceptance. */
 function makeCachedGrouper(
   cacheId: string,
   cacheDir: () => string,
   invoke: (prompt: string) => SpawnResult | Promise<SpawnResult>,
   onRun?: () => void,
 ): BackendGroupFn {
-  return async (skills: readonly SkillMeta[]): Promise<RawGroup[]> => {
+  return async (skills: readonly SkillMeta[]): Promise<BackendRun> => {
     const cacheKey = hashSkills(skills, cacheId);
     const cached = readCache(cacheDir, cacheKey);
     if (cached !== null) {
-      return cached;
+      return { groups: cached }; // already gate-passing when written — no re-commit
     }
     onRun?.();
     const result = await invoke(buildClusterPrompt(skills));
-    if (isSpawnFailure(result) || result.stdout === null) {
-      return [];
+    const stdout = result.stdout;
+    if (isSpawnFailure(result) || stdout === null) {
+      return { groups: [] };
     }
     const validDirs = new Set(skills.map((s) => s.dir));
-    // partitionSkills re-validates whatever crosses the GroupSkillsFn seam (it must —
-    // the seam accepts arbitrary BYO functions); the filtering here exists so the
-    // cache predicate and the empty-output signal see clean groups.
-    const groups = parseClusterResponse(result.stdout, validDirs) ?? [];
-    // Only cache gate-passing groupings: a parseable-but-rejected response (e.g. one
-    // giant group) replayed from cache would permanently disable the stochastic LLM
-    // rescue for this skill set, while parse failures deliberately retry.
-    if (groups.length > 0 && rawGroupsAcceptable(skills, groups)) {
-      writeCache(cacheDir, cacheKey, groups);
+    // partitionSkills re-validates and gates whatever crosses the GroupSkillsFn seam
+    // (it must — the seam accepts arbitrary BYO functions); the filtering here only
+    // keeps the cached artifact and the empty-output signal clean.
+    const groups = parseClusterResponse(stdout, validDirs) ?? [];
+    if (groups.length === 0) {
+      return { groups };
     }
-    return groups;
+    // Caching is committed by the orchestrator iff the acceptance gate passes: a
+    // parseable-but-rejected response (e.g. one giant group) replayed from cache
+    // would permanently disable the stochastic LLM rescue for this skill set.
+    return {
+      groups,
+      commit: (): void => {
+        writeCache(cacheDir, cacheKey, groups);
+      },
+    };
   };
 }
 
 /**
- * Treat a run as failed when the process errored, was signalled (e.g. SIGTERM on timeout),
- * exited non-zero, or produced no string stdout. On timeout the runner reports
- * { signal: "SIGTERM", error: ETIMEDOUT } — so we key on error/signal, not status.
+ * Did the PROCESS fail: errored, signalled (e.g. SIGTERM on timeout), or exited
+ * non-zero. On timeout the runner reports { signal: "SIGTERM", error: ETIMEDOUT } —
+ * so we key on error/signal, not status. Output presence is the caller's check.
  */
 function isSpawnFailure(result: SpawnResult): boolean {
   return (
     result.error !== undefined ||
     result.signal !== null ||
-    (result.status !== null && result.status !== 0) ||
-    result.stdout === null
+    (result.status !== null && result.status !== 0)
   );
 }
 

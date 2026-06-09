@@ -54,7 +54,7 @@ export function stripCommonPrefix(keys: readonly string[]): string[] {
 }
 
 /** First of `desired`, `desired-2`, `desired-3`, … not present in `used`. */
-export function uniqueWithin(used: ReadonlySet<string>, desired: string): string {
+function uniqueWithin(used: ReadonlySet<string>, desired: string): string {
   if (!used.has(desired)) {
     return desired;
   }

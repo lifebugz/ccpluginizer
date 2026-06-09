@@ -1,26 +1,26 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { checkMarketplaceGuard } from "./marketplaceGuard.ts";
+import * as v from "valibot";
+import { checkMarketplaceGuard, isAlreadyMarketplace } from "./marketplaceGuard.ts";
 import { detectMarkerFile, isFreezeOnlyMarker, markerSuppressesSplit } from "./markerFile.ts";
 import { detectConventions } from "./conventions.ts";
 import { detectNonStandardManifest } from "./nonStandardManifest.ts";
 import { detectContentSniff, type SniffCaches } from "./contentSniff.ts";
 import { normalizePathsAgainstRepo } from "./normalize.ts";
 import { createLayoutResolver, type ContainerRef, type SourceLayout } from "./sourceLayout.ts";
-import { enumerateSkills } from "./skillMeta.ts";
+import { countSkillMdDirs, enumerateSkills } from "./skillMeta.ts";
+import { makeDirLister } from "./fsWalk.ts";
+import { makeFrontmatterReader } from "./frontmatterIo.ts";
 import {
   DEFAULT_STRATEGY,
   partitionSkills,
   type ClusterStrategy,
   type GroupSkillsFn,
   type Grouping,
-  type LlmOutcome,
-  type ResolvedStrategy,
+  type SplitProvenance,
 } from "./partition.ts";
 import { byCodeUnit, slugify, uniqueSlugs } from "./slugify.ts";
 import type { Finding, ComponentKind } from "./types.ts";
 import type { MarketplaceEntry, Source } from "../schemas/marketplaceEntry.ts";
-import type { MarkerFile } from "../schemas/markerFile.ts";
+import { MarkerFileSchema, type MarkerFile } from "../schemas/markerFile.ts";
 import type { NonStandardManifest } from "../schemas/nonStandardManifest.ts";
 
 export interface SynthesizeInput {
@@ -31,7 +31,7 @@ export interface SynthesizeInput {
 /** Default threshold: only attempt a split when a repo has at least this many skills. */
 export const DEFAULT_MIN_SKILLS_TO_SPLIT = 25;
 
-const LLM_NOT_INVOKED: LlmOutcome = { step: "not-invoked" };
+const NO_SPLIT: SplitProvenance = { kind: "none" };
 
 export interface SynthesizeEntriesInput extends SynthesizeInput {
   /** Attempt a guarded auto-split (default true). `false` forces a single entry. */
@@ -44,16 +44,23 @@ export interface SynthesizeEntriesInput extends SynthesizeInput {
   readonly group?: GroupSkillsFn;
   /** Minimum skill count to attempt a split (default 25). */
   readonly minSkillsToSplit?: number;
+  /** Already-parsed marker from a previous synthesis (null = known absent), to skip re-reading. */
+  readonly existingMarker?: MarkerFile | null;
+  /** Walk/parse caches from a previous synthesis over the same repo. */
+  readonly caches?: SniffCaches;
 }
 
+/** Shape facts of an emitted split (the notice's data source). */
 export interface SplitInfo {
-  readonly strategy: ResolvedStrategy;
   readonly groupCount: number;
+  readonly coreEmitted: boolean;
+  readonly umbrellaEmitted: boolean;
 }
 
 /** A `.ccpluginizer.json`-shaped freeze of the emitted split (for `--write-marker`). */
 export interface MarkerDraft {
   readonly name: string;
+  /** The core INTENT (curated or default), not whether a core happened to be emittable this scan. */
   readonly core: boolean;
   readonly umbrella: boolean;
   readonly groups: { readonly slug: string; readonly skills: string[] }[];
@@ -61,18 +68,20 @@ export interface MarkerDraft {
 
 export interface SynthesizeEntriesResult {
   readonly entries: MarketplaceEntry[];
-  /** Non-null when a split was emitted; carries the strategy + group count for the notice. */
+  /** Non-null exactly when provenance.kind !== "none": the emitted split's shape. */
   readonly split: SplitInfo | null;
+  /** Where the grouping came from — or kind "none", carrying the LLM failure detail. */
+  readonly provenance: SplitProvenance;
+  /** Did partitioning actually run (above threshold, or a frozen marker forced it)? */
+  readonly attempted: boolean;
   /** Non-null when a split was emitted; the freezable marker draft. */
   readonly marker: MarkerDraft | null;
   /** The committed marker this scan parsed (so callers never re-read the file). */
   readonly existingMarker: MarkerFile | null;
   /** Advisory messages for the caller to surface (e.g. dropped artifacts, placeholder URLs). */
   readonly warnings: string[];
-  /** True iff `partitionSkills` was called and returned null (above-threshold, no clean partition). */
-  readonly splitAttemptedButEmpty: boolean;
-  /** Provenance of the LLM step, reported by the partition orchestrator. */
-  readonly llm: LlmOutcome;
+  /** Walk/parse caches, reusable by a follow-up synthesis (e.g. interactive decline). */
+  readonly caches: SniffCaches;
 }
 
 /**
@@ -84,13 +93,29 @@ export async function synthesizeEntries(
   input: SynthesizeEntriesInput,
 ): Promise<SynthesizeEntriesResult> {
   const wantSplit = input.split ?? true;
-  const marker = detectMarkerFile(input.repoRoot);
+  const marker =
+    input.existingMarker !== undefined ? input.existingMarker : detectMarkerFile(input.repoRoot);
+
+  // Walk/parse caches and the permission-skip channel are owned here so BOTH the
+  // split attempt and the fall-through detection report an incomplete walk.
+  const skippedPaths: string[] = [];
+  const caches: SniffCaches =
+    input.caches ?? {
+      list: makeDirLister((p) => skippedPaths.push(p)),
+      readFrontmatter: makeFrontmatterReader(),
+    };
+  const skipWarnings = (): string[] =>
+    skippedPaths.length > 0
+      ? [
+          `${String(skippedPaths.length)} unreadable path(s) were skipped during detection (permission denied), e.g. "${skippedPaths[0] ?? ""}" — the emitted entries may be incomplete.`,
+        ]
+      : [];
 
   // A committed marker WITHOUT groups is an explicit single-entry curation — honor
   // it rather than auto-splitting (the single-entry path applies marker.name/skills).
   const attempt =
     wantSplit && (marker === null || !markerSuppressesSplit(marker))
-      ? await attemptSplit(input, marker)
+      ? await attemptSplit(input, marker, caches, skipWarnings)
       : null;
   if (attempt !== null && attempt.fulfilled !== null) {
     return attempt.fulfilled;
@@ -100,53 +125,47 @@ export async function synthesizeEntries(
   // the top) to preserve the abort for non-sliceable already-marketplace repos while
   // still allowing a value-adding re-curation split above.
   checkMarketplaceGuard(input.repoRoot);
+  const entries = [synthesizeEntryWithMarker(input, marker, caches)];
   return {
-    entries: [synthesizeEntryWithMarker(input, marker, attempt?.caches)],
+    entries,
     split: null,
+    provenance: attempt?.provenance ?? NO_SPLIT,
+    attempted: attempt?.attempted ?? false,
     marker: null,
     existingMarker: marker,
-    warnings: attempt?.warnings ?? [],
-    splitAttemptedButEmpty: attempt?.attemptedButEmpty ?? false,
-    llm: attempt?.llm ?? LLM_NOT_INVOKED,
+    // Computed after the fall-through detection ran, so sniff-time skips count too.
+    warnings: [...(attempt?.warnings ?? []), ...skipWarnings()],
+    caches,
   };
 }
 
 type SplitAttempt =
   /** The split fired; the complete result. */
   | { readonly fulfilled: SynthesizeEntriesResult }
-  /** No split: what happened, plus walk/parse caches reusable by the fall-through. */
+  /** No split: what happened, for the fall-through result. */
   | {
       readonly fulfilled: null;
-      readonly attemptedButEmpty: boolean;
-      readonly llm: LlmOutcome;
+      readonly attempted: boolean;
+      readonly provenance: SplitProvenance;
       readonly warnings: string[];
-      readonly caches: SniffCaches;
     };
 
 async function attemptSplit(
   input: SynthesizeEntriesInput,
   marker: MarkerFile | null,
+  caches: SniffCaches,
+  skipWarnings: () => string[],
 ): Promise<SplitAttempt> {
   const minSkills = input.minSkillsToSplit ?? DEFAULT_MIN_SKILLS_TO_SPLIT;
   // Two-phase layout: only the skills container is resolved up front; the rest
   // (agents/mcp/pluginRoot/artifacts) resolves after the partition succeeds, so
-  // sub-threshold scans never pay for a repo-wide .md parse. Permission-skipped
-  // paths are collected so an incomplete detection is never silent.
-  const skippedPaths: string[] = [];
-  const resolver = createLayoutResolver(input.repoRoot, { onSkip: (p) => skippedPaths.push(p) });
-  const caches: SniffCaches = { list: resolver.list, readFrontmatter: resolver.readFrontmatter };
-  const skipWarnings = (): string[] =>
-    skippedPaths.length > 0
-      ? [
-          `${String(skippedPaths.length)} unreadable path(s) were skipped during detection (permission denied), e.g. "${skippedPaths[0] ?? ""}" — the emitted entries may be incomplete.`,
-        ]
-      : [];
-  const none = (attemptedButEmpty: boolean, llm: LlmOutcome, warnings: string[]): SplitAttempt => ({
+  // sub-threshold scans never pay for a repo-wide .md parse.
+  const resolver = createLayoutResolver(input.repoRoot, caches);
+  const none = (attempted: boolean, provenance: SplitProvenance, warnings: string[]): SplitAttempt => ({
     fulfilled: null,
-    attemptedButEmpty,
-    llm,
-    warnings: [...warnings, ...skipWarnings()],
-    caches,
+    attempted,
+    provenance,
+    warnings,
   });
 
   const frozen = marker !== null && !markerSuppressesSplit(marker);
@@ -154,7 +173,7 @@ async function attemptSplit(
   if (resolver.skillsContainer === null) {
     return none(
       false,
-      LLM_NOT_INVOKED,
+      NO_SPLIT,
       frozen
         ? ['.ccpluginizer.json freezes a split, but no skills container was found; ignoring the frozen groups and emitting a single entry.']
         : [],
@@ -163,49 +182,65 @@ async function attemptSplit(
 
   const skills = enumerateSkills(resolver.skillsContainer.absDir, resolver.list, resolver.readFrontmatter);
   if (!frozen && skills.length < minSkills) {
-    return none(false, LLM_NOT_INVOKED, []);
+    return none(false, NO_SPLIT, []);
   }
-  // SKILL.md dirs the container scored but enumeration could not parse would vanish
+  // SKILL.md dirs the container holds but enumeration could not parse would vanish
   // from every slice — the one dropped-content class with no other warning channel.
-  const unparsed = resolver.skillDirCount - skills.length;
+  // Counted by the same unfiltered child set enumerateSkills walks.
+  const unparsed = countSkillMdDirs(resolver.skillsContainer.absDir, resolver.list) - skills.length;
   const unparsedWarnings =
     unparsed > 0
       ? [
-          `${String(unparsed)} skill ${unparsed === 1 ? "directory" : "directories"} inside "${resolver.skillsContainer.relPath}" ${unparsed === 1 ? "has" : "have"} missing or invalid SKILL.md frontmatter and ${unparsed === 1 ? "is" : "are"} not covered by any emitted slice; fix the frontmatter or use --no-split for a single entry that carries the whole directory.`,
+          `${String(unparsed)} skill ${unparsed === 1 ? "directory" : "directories"} inside "${resolver.skillsContainer.relPath}" ${unparsed === 1 ? "has" : "have"} missing or invalid SKILL.md frontmatter and ${unparsed === 1 ? "is" : "are"} not covered by any emitted slice; fix the frontmatter so they are detected.`,
         ]
       : [];
 
-  const { result, llm, warnings: partitionWarnings } = await partitionSkills(skills, {
+  // Below the threshold, only a marker-driven grouping can be honored — skip the
+  // LLM step entirely rather than paying for a rescue that would be discarded.
+  const onlyMarkerCanWin = frozen && skills.length < minSkills;
+  const { groups, provenance, warnings: partitionWarnings } = await partitionSkills(skills, {
     strategy: input.strategy ?? DEFAULT_STRATEGY,
     ...(frozen && markerGroups !== undefined ? { markerGroups } : {}),
     ...(input.group !== undefined ? { group: input.group } : {}),
+    ...(onlyMarkerCanWin ? { suppressLlm: true } : {}),
   });
-  if (result === null) {
-    return none(true, llm, [...partitionWarnings, ...unparsedWarnings]);
+  if (groups === null) {
+    return none(
+      !onlyMarkerCanWin,
+      provenance,
+      [
+        ...partitionWarnings,
+        ...(frozen
+          ? ['the committed .ccpluginizer.json "groups" matched no skill directory and no fallback partition was found; emitting a single entry — re-run scan --write-marker to refresh the frozen split.']
+          : []),
+        ...unparsedWarnings,
+      ],
+    );
   }
-  // A fully-stale marker authorized the attempt but was then ignored by the
-  // partition layer; without it, this repo never cleared the min-skills gate —
-  // honor the threshold rather than emit a split nobody asked for.
-  if (frozen && result.strategy !== "marker" && skills.length < minSkills) {
-    return none(false, llm, [...partitionWarnings, ...unparsedWarnings]);
+  // A voided marker authorized this attempt but did not win; without it the repo
+  // never cleared the min-skills gate — honor the threshold.
+  if (onlyMarkerCanWin && provenance.kind !== "marker") {
+    return none(false, NO_SPLIT, [...partitionWarnings, ...unparsedWarnings]);
   }
 
   const layout = resolver.full();
-  const { entries, marker: markerDraft, agentsDropped } = buildSplitEntries(
-    result.groups,
+  // A voided marker must not keep steering the split it no longer defines.
+  const markerDrives = provenance.kind === "marker";
+  const { entries, marker: markerDraft, agentsDropped, coreEmitted } = buildSplitEntries(
+    groups,
     layout,
     resolver.skillsContainer,
     input.sourceRepo,
     {
       // Opt-in/additive: an explicit --umbrella OR a marker umbrella:true.
-      umbrella: (input.umbrella ?? false) || (marker?.umbrella ?? false),
-      emitCore: marker?.core ?? true,
-      ...(marker?.name !== undefined ? { markerName: marker.name } : {}),
+      umbrella: (input.umbrella ?? false) || (markerDrives && (marker?.umbrella ?? false)),
+      emitCore: markerDrives ? (marker?.core ?? true) : true,
+      ...(markerDrives && marker?.name !== undefined ? { markerName: marker.name } : {}),
     },
   );
   // Re-curating a repo that already publishes a marketplace is deliberate (the
   // split adds value the existing catalog lacks) but must never be silent.
-  const recurationWarnings = existsSync(join(input.repoRoot, ".claude-plugin", "marketplace.json"))
+  const recurationWarnings = isAlreadyMarketplace(input.repoRoot)
     ? [
         'this repo already publishes a marketplace (.claude-plugin/marketplace.json); the split re-curates it. Install via `/plugin marketplace add` instead if you just want the existing catalog.',
       ]
@@ -213,18 +248,19 @@ async function attemptSplit(
   return {
     fulfilled: {
       entries,
-      split: { strategy: result.strategy, groupCount: result.groups.length },
+      split: { groupCount: groups.length, coreEmitted, umbrellaEmitted: markerDraft.umbrella },
+      provenance,
+      attempted: true,
       marker: markerDraft,
       existingMarker: marker,
       warnings: [
         ...partitionWarnings,
         ...unparsedWarnings,
         ...recurationWarnings,
-        ...collectSplitWarnings(layout, input.sourceRepo, markerDraft.core, markerDraft.umbrella, agentsDropped),
+        ...collectSplitWarnings(layout, input.sourceRepo, coreEmitted, markerDraft.umbrella, agentsDropped),
         ...skipWarnings(),
       ],
-      splitAttemptedButEmpty: false,
-      llm,
+      caches,
     },
   };
 }
@@ -246,7 +282,7 @@ function collectSplitWarnings(
       );
     } else if (!coreEmitted && !umbrellaEmitted) {
       warnings.push(
-        `The MCP server in "${layout.mcp.relPath}" is not carried by any emitted entry (core is disabled and no umbrella was emitted); it will be dropped. Use --umbrella, or a marker with "core": true, to retain it.`,
+        `The MCP server in "${layout.mcp.relPath}" is not carried by any emitted entry (no core entry was emitted and no umbrella was requested); it will be dropped. Use --umbrella, or a marker with "core": true, to retain it.`,
       );
     }
   }
@@ -257,11 +293,11 @@ function collectSplitWarnings(
   if (layout.agentsContainer !== null && !umbrellaEmitted) {
     if (agentsDropped) {
       warnings.push(
-        `The agents in "${layout.agentsContainer.relPath}" are not carried by the core entry (rooting core at their container would auto-load its skills/ tree always-on); they will be dropped. Use --umbrella to retain them.`,
+        `The agents in "${layout.agentsContainer.relPath}" are not carried by the core entry (no safe core root exists — rooting it would auto-load a skills/ tree always-on); they will be dropped. Use --umbrella to retain them.`,
       );
     } else if (!coreEmitted) {
       warnings.push(
-        `The agents in "${layout.agentsContainer.relPath}" are not carried by any emitted entry (core is disabled and no umbrella was emitted); they will be dropped. Use --umbrella, or a marker with "core": true, to retain them.`,
+        `The agents in "${layout.agentsContainer.relPath}" are not carried by any emitted entry (no core entry was emitted and no umbrella was requested); they will be dropped. Use --umbrella, or a marker with "core": true, to retain them.`,
       );
     }
   }
@@ -321,15 +357,26 @@ function synthesizeEntryWithMarker(
       return {
         ...synthesizeEntryFromDetection(input, caches),
         name: marker.name,
-        ...(marker.description !== undefined ? { description: marker.description } : {}),
-        ...(marker.license !== undefined ? { license: marker.license } : {}),
-        ...(marker.homepage !== undefined ? { homepage: marker.homepage } : {}),
-        ...(marker.repository !== undefined ? { repository: marker.repository } : {}),
+        ...markerIdentity(marker),
       };
     }
     return buildEntryFromMarker(marker, input.sourceRepo, input.repoRoot);
   }
   return synthesizeEntryFromDetection(input, caches);
+}
+
+/**
+ * The marker's identity metadata (sans name), shared by the freeze-only overlay and
+ * buildEntryFromMarker so a new identity field cannot be applied in one path and
+ * silently dropped in the other.
+ */
+function markerIdentity(marker: MarkerFile): Partial<MarketplaceEntry> {
+  return {
+    ...(marker.description !== undefined ? { description: marker.description } : {}),
+    ...(marker.license !== undefined ? { license: marker.license } : {}),
+    ...(marker.homepage !== undefined ? { homepage: marker.homepage } : {}),
+    ...(marker.repository !== undefined ? { repository: marker.repository } : {}),
+  };
 }
 
 function synthesizeEntryFromDetection(input: SynthesizeInput, caches?: SniffCaches): MarketplaceEntry {
@@ -431,10 +478,7 @@ function buildEntryFromMarker(
     name: marker.name,
     source: makeGithubSource(sourceRepo),
     strict: false,
-    ...(marker.description !== undefined ? { description: marker.description } : {}),
-    ...(marker.license !== undefined ? { license: marker.license } : {}),
-    ...(marker.homepage !== undefined ? { homepage: marker.homepage } : {}),
-    ...(marker.repository !== undefined ? { repository: marker.repository } : {}),
+    ...markerIdentity(marker),
     ...(skills !== undefined ? { skills } : {}),
     ...(agents !== undefined ? { agents } : {}),
     ...(commands !== undefined ? { commands } : {}),
@@ -505,6 +549,43 @@ function defaultEntryName(sourceRepo: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Marker serialization (round-trips with the parse semantics defined above).
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge the fresh draft over the existing marker, preserving hand-curated fields.
+ * Lives beside MarkerDraft and the `marker.core ?? true` consumer so the
+ * serialize/parse semantics stay adjacent; the result is validated against
+ * MarkerFileSchema so any drift fails loudly at write time, not on the next scan.
+ */
+export function serializeMarkerDraft(draft: MarkerDraft, existing: MarkerFile | null): Record<string, unknown> {
+  // The draft owns exactly its own keys; every other field (description, license,
+  // homepage, repository, single-entry component lists, ...) is curation that a
+  // --write-marker refresh must not destroy. Deriving the set from the draft keeps
+  // future MarkerDraft fields refreshed instead of silently shadowed by stale values.
+  const draftOwned = new Set(Object.keys(draft));
+  const preserved: Record<string, unknown> = {};
+  if (existing !== null) {
+    for (const [key, value] of Object.entries(existing)) {
+      if (!draftOwned.has(key) && value !== undefined) {
+        preserved[key] = value;
+      }
+    }
+  }
+  // `core` is emitted explicitly even when false: this module reads `marker.core ?? true`,
+  // so omitting a false would silently re-enable the core entry on the next scan and a
+  // coreless split would not round-trip. `umbrella: false` is omitted (JSON.stringify
+  // drops undefined) to keep the file minimal — absence already means false.
+  const merged: Record<string, unknown> = {
+    ...draft,
+    ...(draft.umbrella ? {} : { umbrella: undefined }),
+    ...preserved,
+  };
+  v.parse(MarkerFileSchema, JSON.parse(JSON.stringify(merged)));
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
 // Split emission: core + on-demand skill slices (+ optional umbrella).
 // ---------------------------------------------------------------------------
 
@@ -521,7 +602,7 @@ function buildSplitEntries(
   skillsContainer: ContainerRef,
   sourceRepo: string,
   options: SplitOptions,
-): { entries: MarketplaceEntry[]; marker: MarkerDraft; agentsDropped: boolean } {
+): { entries: MarketplaceEntry[]; marker: MarkerDraft; agentsDropped: boolean; coreEmitted: boolean } {
   const base = slugify(options.markerName ?? defaultEntryName(sourceRepo));
   const entries: MarketplaceEntry[] = [];
 
@@ -559,8 +640,11 @@ function buildSplitEntries(
 
   return {
     entries,
-    marker: { name: base, core: core.entry !== null, umbrella: options.umbrella, groups: markerGroups },
+    // The draft freezes INTENT: emitCore stays true when a core merely was not
+    // possible this scan, so a later scan that gains agents/MCP emits one again.
+    marker: { name: base, core: options.emitCore, umbrella: options.umbrella, groups: markerGroups },
     agentsDropped: core.agentsDropped,
+    coreEmitted: core.entry !== null,
   };
 }
 
@@ -629,14 +713,16 @@ function buildCoreEntry(
   if (agents === null && mcp === null) {
     return { entry: null, agentsDropped: false }; // nothing to share
   }
-  // Refuse an agents root with ANY direct `skills/` child: Claude Code auto-discovers
-  // `<root>/skills`, so such a core would load skills always-on and defeat the split —
-  // whether or not that child happens to be the chosen container.
+  // Refuse ANY root with a direct `skills/` child — Claude Code auto-discovers
+  // `<root>/skills`, so such a core would load skills always-on and defeat the
+  // split. That applies to the agents container and the fallback alike.
   const carriesAgents = agents !== null && !agents.hasSkillsChild;
-  // Root at the agents container when safe; otherwise the skills container, which
-  // has no `skills/` subdir to auto-load.
-  const rootPath = carriesAgents ? agents.relPath : skillsContainer.relPath;
-  if (!carriesAgents && mcp === null) {
+  const rootPath = carriesAgents
+    ? agents.relPath
+    : skillsContainer.hasSkillsChild
+      ? null
+      : skillsContainer.relPath;
+  if (rootPath === null || (!carriesAgents && mcp === null)) {
     return { entry: null, agentsDropped: agents !== null };
   }
   return {
