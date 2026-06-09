@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { MarkerFileError } from "../errors.ts";
+import { readJsonFile } from "./fsWalk.ts";
 import type { MarkerFile } from "../schemas/markerFile.ts";
 import { MarkerFileSchema } from "../schemas/markerFile.ts";
 
@@ -10,12 +11,11 @@ export function detectMarkerFile(repoRoot: string): MarkerFile | null {
   if (!existsSync(markerPath)) {
     return null;
   }
-  const raw = readFileSync(markerPath, "utf8");
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = readJsonFile(markerPath);
   } catch (e) {
-    throw new MarkerFileError(`Invalid JSON in ${markerPath}: ${e instanceof Error ? e.message : String(e)}`, []);
+    throw new MarkerFileError(e instanceof Error ? e.message : String(e), []);
   }
   const result = v.safeParse(MarkerFileSchema, parsed);
   if (!result.success) {

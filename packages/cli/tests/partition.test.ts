@@ -6,17 +6,7 @@ import {
   partitionSkills,
   type Grouping,
 } from "../src/detector/partition.ts";
-
-function mk(dir: string, product?: string, language?: string): SkillMeta {
-  return {
-    path: `./${dir}/`,
-    dir,
-    name: dir,
-    description: `Skill ${dir}`,
-    ...(product !== undefined ? { product } : {}),
-    ...(language !== undefined ? { language } : {}),
-  };
-}
+import { mk } from "./helpers.ts";
 
 const LANGS = ["curl", "go", "java", "javascript", "python", "ruby"];
 
@@ -33,7 +23,7 @@ function telnyxLike(): SkillMeta[] {
   const skills: SkillMeta[] = [];
   for (const p of products) {
     for (const lang of LANGS) {
-      skills.push(mk(`telnyx-${p}-${lang}`, p, lang));
+      skills.push(mk(`telnyx-${p}-${lang}`, p));
     }
   }
   return skills;
@@ -41,7 +31,7 @@ function telnyxLike(): SkillMeta[] {
 
 /** A set no deterministic strategy can partition: one product, distinct languages only. */
 function unpartitionable(): SkillMeta[] {
-  return LANGS.map((l) => mk(`solo-${l}`, "solo", l));
+  return LANGS.map((l) => mk(`solo-${l}`, "solo"));
 }
 
 function totalCovered(groups: Grouping): string[] {
@@ -72,8 +62,8 @@ describe("partitionByMetadata: collapse + coalesce-to-fit", () => {
 
   test("an even two-product split yields K=2", () => {
     const skills = [
-      ...LANGS.map((l) => mk(`m-${l}`, "messaging", l)),
-      ...LANGS.map((l) => mk(`v-${l}`, "voice", l)),
+      ...LANGS.map((l) => mk(`m-${l}`, "messaging")),
+      ...LANGS.map((l) => mk(`v-${l}`, "voice")),
     ];
     const groups = partitionByMetadata(skills);
     expect(groups?.length).toBe(2);
@@ -85,7 +75,7 @@ describe("partitionByMetadata: collapse + coalesce-to-fit", () => {
   });
 
   test("returns null (K<2) when every skill is the same product", () => {
-    const skills = LANGS.map((l) => mk(`a-${l}`, "alpha", l));
+    const skills = LANGS.map((l) => mk(`a-${l}`, "alpha"));
     expect(partitionByMetadata(skills)).toBeNull();
   });
 
@@ -246,7 +236,7 @@ describe("partitionSkills: orchestrator", () => {
   });
 
   test("a forced strategy that fails the gate yields null (no split)", async () => {
-    const skills = LANGS.map((l) => mk(`a-${l}`, "alpha", l)); // single product
+    const skills = LANGS.map((l) => mk(`a-${l}`, "alpha")); // single product
     const result = await partitionSkills(skills, { strategy: "metadata" });
     expect(result).toBeNull();
   });
@@ -255,5 +245,41 @@ describe("partitionSkills: orchestrator", () => {
     const skills = [mk("only-one")];
     const result = await partitionSkills(skills, { strategy: "auto" });
     expect(result).toBeNull();
+  });
+});
+
+describe("partitionSkills: marker staleness and path conventions", () => {
+  test("a fully-stale marker is ignored (falls back to the cascade) and warns", async () => {
+    const skills = telnyxLike();
+    const result = await partitionSkills(skills, {
+      strategy: "auto",
+      markerGroups: [{ slug: "old", skills: ["./gone-a/", "./gone-b/"] }],
+    });
+    expect(result?.strategy).toBe("metadata"); // not "marker" — the bogus freeze did not win
+    expect(result?.warnings?.some((w) => w.includes("ignoring the frozen split"))).toBe(true);
+  });
+
+  test("a partially-stale marker buckets unlisted skills into misc and warns", async () => {
+    const skills = [mk("a0", "a"), mk("a1", "a"), mk("b0", "b"), mk("b1", "b")];
+    const result = await partitionSkills(skills, {
+      markerGroups: [{ slug: "alpha", skills: ["./a0/", "./a1/"] }],
+    });
+    expect(result?.strategy).toBe("marker");
+    const misc = result?.groups.find((g) => g.slug === "misc");
+    expect(misc?.skills.map((s) => s.dir)).toEqual(["b0", "b1"]);
+    expect(result?.warnings?.some((w) => w.includes("misc"))).toBe(true);
+  });
+
+  test("repo-root-relative marker paths resolve via their final segment", async () => {
+    const skills = [mk("voice-a", "voice"), mk("msg-a", "messaging")];
+    const result = await partitionSkills(skills, {
+      markerGroups: [
+        { slug: "voice", skills: ["./providers/claude/plugin/skills/voice-a/"] },
+        { slug: "messaging", skills: ["./providers/claude/plugin/skills/msg-a/"] },
+      ],
+    });
+    expect(result?.strategy).toBe("marker");
+    expect(result?.groups.length).toBe(2);
+    expect(result?.warnings ?? []).toEqual([]);
   });
 });

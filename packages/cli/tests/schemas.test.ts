@@ -130,7 +130,7 @@ describe("SkillFrontmatterSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  test("accepts nested metadata (product, language) plus tags and category", () => {
+  test("accepts nested metadata plus extra fields (tags, category) without failing", () => {
     const result = v.safeParse(SkillFrontmatterSchema, {
       name: "telnyx-10dlc-curl",
       description: "10DLC brand and campaign registration",
@@ -141,20 +141,18 @@ describe("SkillFrontmatterSchema", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.output.metadata?.product).toBe("10dlc");
-      expect(result.output.metadata?.language).toBe("curl");
     }
   });
 
   test("coerces a numeric metadata.product / description to string (lenient, no skill drop)", () => {
     const result = v.safeParse(SkillFrontmatterSchema, {
       description: 2024,
-      metadata: { product: 10, language: 3 },
+      metadata: { product: 10 },
     });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.output.description).toBe("2024");
       expect(result.output.metadata?.product).toBe("10");
-      expect(result.output.metadata?.language).toBe("3");
     }
   });
 
@@ -166,14 +164,6 @@ describe("SkillFrontmatterSchema", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.output.metadata?.product).toBe("voice");
-    }
-  });
-
-  test("accepts a bare-string tags value, coerced to a single-element array (no skill drop)", () => {
-    const result = v.safeParse(SkillFrontmatterSchema, { description: "x", tags: "voice" });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.output.tags).toEqual(["voice"]);
     }
   });
 
@@ -190,10 +180,9 @@ describe("SkillFrontmatterSchema", () => {
 
     const tagsMap = v.safeParse(SkillFrontmatterSchema, { description: "x", tags: { a: "b" } });
     expect(tagsMap.success).toBe(true);
-    expect(tagsMap.success && tagsMap.output.tags).toBeUndefined();
   });
 
-  test("keeps valid metadata sub-fields even when a sibling is malformed", () => {
+  test("keeps valid metadata.product even when a sibling key is malformed", () => {
     const result = v.safeParse(SkillFrontmatterSchema, {
       description: "x",
       metadata: { product: "voice", language: null },
@@ -201,7 +190,6 @@ describe("SkillFrontmatterSchema", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.output.metadata?.product).toBe("voice");
-      expect(result.output.metadata?.language).toBeUndefined();
     }
   });
 });

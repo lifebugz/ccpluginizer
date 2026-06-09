@@ -1,6 +1,13 @@
 import { describe, expect, test, spyOn } from "bun:test";
 import { join } from "node:path";
-import { resolveLlmConfig, printSplitNotice, printNoSplitNotice, reviewSplit } from "../src/commands/scan.ts";
+import {
+  resolveLlmConfig,
+  printSplitNotice,
+  printNoSplitNotice,
+  reviewSplit,
+  makeLazyGrouper,
+  type LlmRuntime,
+} from "../src/commands/scan.ts";
 import type { ResolvedGrouper } from "../src/commands/llmGrouper.ts";
 import type { SynthesizeEntriesResult } from "../src/detector/synthesize.ts";
 
@@ -8,6 +15,15 @@ const FIXTURES = join(import.meta.dirname, "fixtures");
 
 const SUBPROCESS: ResolvedGrouper = { fn: () => Promise.resolve([]), backendId: "x", kind: "subprocess" };
 const CLAUDE: ResolvedGrouper = { fn: () => Promise.resolve([]), backendId: "claude", kind: "claude" };
+
+/** An LlmRuntime in a chosen post-run state, for notice rendering tests. */
+function runtime(resolved: ResolvedGrouper | null, produced = false): LlmRuntime {
+  const r = makeLazyGrouper({ cmdFromEnv: false, timeoutMs: 1000 }, () => resolved);
+  r.state.attempted = true;
+  r.state.resolved = resolved;
+  r.state.produced = produced;
+  return r;
+}
 
 function splitResult(strategy: "marker" | "llm" | "metadata" | "directory" | "name-prefix"): SynthesizeEntriesResult {
   return {
@@ -78,14 +94,16 @@ describe("printSplitNotice taxonomy", () => {
   });
 
   test("llm result names the backend kind", () => {
-    expect(capture(() => { printSplitNotice(splitResult("llm"), "llm", SUBPROCESS); })).toContain("via subprocess clustering");
-    expect(capture(() => { printSplitNotice(splitResult("llm"), "auto-llm", CLAUDE); })).toContain("via claude clustering");
+    expect(capture(() => { printSplitNotice(splitResult("llm"), "llm", runtime(SUBPROCESS, true)); })).toContain("via subprocess clustering");
+    expect(capture(() => { printSplitNotice(splitResult("llm"), "auto-llm", runtime(CLAUDE, true)); })).toContain("via claude clustering");
   });
 
-  test("deterministic under --cluster=llm reports the fallback reason", () => {
-    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), "llm", SUBPROCESS); }))
-      .toContain("(LLM backend produced no acceptable grouping or was unreachable)");
-    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), "llm", null); }))
+  test("deterministic under --cluster=llm reports the exact fallback reason", () => {
+    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), "llm", runtime(SUBPROCESS, false)); }))
+      .toContain("(the LLM backend was unreachable or produced no output)");
+    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), "llm", runtime(SUBPROCESS, true)); }))
+      .toContain("(the LLM grouping was rejected by the acceptance gate)");
+    expect(capture(() => { printSplitNotice(splitResult("name-prefix"), "llm", runtime(null)); }))
       .toContain("(no LLM backend found; set --llm-cmd or install the `claude` CLI)");
   });
 
@@ -96,20 +114,60 @@ describe("printSplitNotice taxonomy", () => {
   });
 
   test("auto-llm deterministic win -> plain notice, no fallback suffix even though a backend was resolved", () => {
-    const out = capture(() => { printSplitNotice(splitResult("name-prefix"), "auto-llm", SUBPROCESS); });
+    const out = capture(() => { printSplitNotice(splitResult("name-prefix"), "auto-llm", runtime(SUBPROCESS)); });
     expect(out).toContain("via name-prefix clustering");
     expect(out).not.toMatch(/clustering \(/); // no parenthesized fallback reason after the strategy
   });
 });
 
 describe("printNoSplitNotice", () => {
-  test("resolved -> rejected-LLM phrasing, names the cluster", () => {
-    expect(capture(() => { printNoSplitNotice("auto-llm", SUBPROCESS); }))
-      .toBe("ccpluginizer: --cluster=auto-llm produced no split — no acceptable LLM grouping and no clean deterministic partition; emitting a single entry.");
+  test("gate-rejected LLM grouping -> exact phrasing, names the cluster", () => {
+    expect(capture(() => { printNoSplitNotice("auto-llm", runtime(SUBPROCESS, true)); }))
+      .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM grouping was rejected by the acceptance gate and no clean deterministic partition; emitting a single entry.");
+  });
+  test("backend ran but produced nothing -> unreachable phrasing", () => {
+    expect(capture(() => { printNoSplitNotice("auto-llm", runtime(SUBPROCESS, false)); }))
+      .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM backend was unreachable or produced no output, and no clean deterministic partition; emitting a single entry.");
   });
   test("no backend -> degrade phrasing", () => {
-    expect(capture(() => { printNoSplitNotice("llm", null); }))
+    expect(capture(() => { printNoSplitNotice("llm", runtime(null)); }))
       .toBe("ccpluginizer: --cluster=llm produced no split — no clean deterministic partition and no LLM backend available; emitting a single entry.");
+  });
+});
+
+describe("makeLazyGrouper", () => {
+  test("does not resolve the backend until first invocation", async () => {
+    let resolves = 0;
+    const r = makeLazyGrouper({ cmdFromEnv: false, timeoutMs: 1000 }, () => {
+      resolves += 1;
+      return SUBPROCESS;
+    });
+    expect(resolves).toBe(0);
+    await r.fn([]);
+    await r.fn([]);
+    expect(resolves).toBe(1); // memoized
+    expect(r.state.attempted).toBe(true);
+  });
+
+  test("records produced=true only when the backend returns groups", async () => {
+    const backend: ResolvedGrouper = {
+      fn: () => Promise.resolve([{ slug: "a", members: ["x"] }]),
+      backendId: "b",
+      kind: "subprocess",
+    };
+    const r = makeLazyGrouper({ cmdFromEnv: false, timeoutMs: 1000 }, () => backend);
+    await r.fn([]);
+    expect(r.state.produced).toBe(true);
+
+    const empty = makeLazyGrouper({ cmdFromEnv: false, timeoutMs: 1000 }, () => SUBPROCESS);
+    await empty.fn([]);
+    expect(empty.state.produced).toBe(false);
+  });
+
+  test("returns [] without crashing when no backend resolves", async () => {
+    const r = makeLazyGrouper({ cmdFromEnv: false, timeoutMs: 1000 }, () => null);
+    expect(await r.fn([])).toEqual([]);
+    expect(r.state.resolved).toBeNull();
   });
 });
 
@@ -117,7 +175,7 @@ describe("reviewSplit (confirmFn seam)", () => {
   test("decline re-synthesizes a single entry; no partition re-attempt", async () => {
     const out = await reviewSplit(
       splitResult("name-prefix"),
-      { repoPath: join(FIXTURES, "skills-only"), sourceRepo: "local/skills-only", minSkills: 25, requestedCluster: "llm", resolved: null },
+      { repoPath: join(FIXTURES, "skills-only"), sourceRepo: "local/skills-only", minSkills: 25, requestedCluster: "llm", llm: null },
       () => Promise.resolve(false),
     );
     expect(out.split).toBeNull();
@@ -128,7 +186,7 @@ describe("reviewSplit (confirmFn seam)", () => {
     const original = splitResult("metadata");
     const out = await reviewSplit(
       original,
-      { repoPath: join(FIXTURES, "skills-only"), sourceRepo: "local/skills-only", minSkills: 25, requestedCluster: "auto-llm", resolved: null },
+      { repoPath: join(FIXTURES, "skills-only"), sourceRepo: "local/skills-only", minSkills: 25, requestedCluster: "auto-llm", llm: null },
       () => Promise.resolve(true),
     );
     expect(out).toBe(original);

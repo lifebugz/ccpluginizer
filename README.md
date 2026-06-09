@@ -36,7 +36,7 @@ ccpluginizer scan <owner/repo>          # Generate a marketplace entry (auto-spl
 ccpluginizer validate <entry|dir|array> # Validate entries against the schema (+ duplicate-name check)
 ```
 
-To add a repo to this catalog, run `scan`, save the JSON to `entries/<name>.json`, and open a PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+To add a repo to this catalog, run `scan --out-dir entries` (one JSON file per emitted entry; a single un-split scan can also be saved as `entries/<name>.json`) and open a PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 One-shot, no install:
 
@@ -53,7 +53,7 @@ So `scan` **splits by default, but only when it helps**. When a repo has many sk
 - a shared **`<base>-core`** entry — the plugin's MCP server (inlined, ~0 always-on tokens) and agents;
 - one **`<base>-<domain>`** slice per product cluster, each depending on `-core`, so installing a slice pulls the shared core in transitively and de-duplicates it.
 
-Install only the domains you need; the skill-listing budget is charged only for those. Small or single-domain repos are unaffected — output is byte-identical to a single entry, and a one-line `stderr` notice reports whenever (and how) a split happened.
+Install only the domains you need; the skill-listing budget is charged only for those. Small or single-domain repos are unaffected — output stays a single entry, identical to before apart from deterministic path ordering (sniff-detected paths are now emitted sorted), and a one-line `stderr` notice reports whenever (and how) a split happened.
 
 ```bash
 ccpluginizer scan team-telnyx/ai                 # auto-split (deterministic, offline — no LLM)

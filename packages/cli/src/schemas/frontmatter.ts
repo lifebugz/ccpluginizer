@@ -8,32 +8,19 @@ const Stringy = v.pipe(v.union([v.string(), v.number(), v.boolean()]), v.transfo
 const isScalar = (val: unknown): val is string | number | boolean =>
   typeof val === "string" || typeof val === "number" || typeof val === "boolean";
 
-// Advisory scalar (product/language/.../category): these are clustering *hints*, not
-// skill-identity. A present-but-unusable shape (null, a map, a list — e.g. the
-// zero-dep YAML parser yields `product: null` for a deeply-nested value) must be
-// ignored, NOT cause the whole skill to be dropped. Anything non-scalar → undefined.
+// Advisory scalar (metadata.product): a clustering *hint*, not skill-identity. A
+// present-but-unusable shape (null, a map, a list — e.g. the zero-dep YAML parser
+// yields `product: null` for a deeply-nested value) must be ignored, NOT cause the
+// whole skill to be dropped. Anything non-scalar → undefined.
 const AdvisoryString = v.pipe(
   v.unknown(),
   v.transform((val) => (isScalar(val) ? String(val) : undefined)),
 );
 
-// Advisory string list (tags): accept a YAML block/flow list OR a single bare scalar
-// (`tags: voice`), drop non-scalar items, and treat any other shape (e.g. a map) as
-// absent — so a malformed `tags` never drops the skill (mirrors AdvisoryString).
-const AdvisoryStringList = v.pipe(
-  v.unknown(),
-  v.transform((val) => {
-    if (Array.isArray(val)) {
-      const items = val.filter(isScalar).map(String);
-      return items.length > 0 ? items : undefined;
-    }
-    return isScalar(val) ? [String(val)] : undefined;
-  }),
-);
-
 // Advisory nested metadata: a non-object value (scalar/array/null) collapses to an
-// empty map so the skill survives; declared keys are surfaced leniently and unknown
-// keys (generated_by, profile, ...) are ignored rather than rejected.
+// empty map so the skill survives; `product` (the only key clustering consumes) is
+// surfaced leniently and unknown keys (generated_by, profile, ...) are ignored
+// rather than rejected.
 const AdvisoryMetadata = v.pipe(
   v.unknown(),
   v.transform((val) =>
@@ -43,9 +30,6 @@ const AdvisoryMetadata = v.pipe(
   ),
   v.object({
     product: v.optional(AdvisoryString),
-    language: v.optional(AdvisoryString),
-    author: v.optional(AdvisoryString),
-    category: v.optional(AdvisoryString),
   }),
 );
 
@@ -54,8 +38,6 @@ export const SkillFrontmatterSchema = v.object({
   description: Stringy,
   "disable-model-invocation": v.optional(v.boolean()),
   metadata: v.optional(AdvisoryMetadata),
-  tags: v.optional(AdvisoryStringList),
-  category: v.optional(AdvisoryString),
 });
 
 export type SkillFrontmatter = v.InferOutput<typeof SkillFrontmatterSchema>;

@@ -1,8 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import * as v from "valibot";
-import { AgentFrontmatterSchema } from "../schemas/frontmatter.ts";
-import { extractFrontmatter } from "./yaml.ts";
+import { isAgentFile, makeDirLister, walkTree, type DirLister } from "./fsWalk.ts";
+import { byCodeUnit } from "./slugify.ts";
 
 export interface ContainerRef {
   readonly absDir: string;
@@ -23,6 +22,14 @@ export interface McpRef {
   readonly relPath: string;
 }
 
+export type ArtifactKind = "commands" | "output-styles" | "themes" | "monitors";
+
+/** A non-skill artifact a split cannot carry — surfaced as a warning by the caller. */
+export interface ArtifactRef {
+  readonly kind: ArtifactKind;
+  readonly relPath: string;
+}
+
 export interface SourceLayout {
   /** The dir whose direct children are skill dirs — the git-subdir root for slices. */
   readonly skillsContainer: ContainerRef | null;
@@ -31,20 +38,19 @@ export interface SourceLayout {
   readonly pluginRoot: { readonly relPath: string } | null;
   readonly mcp: McpRef | null;
   readonly hooks: { readonly relPath: string } | null;
+  /** Best hit per non-skill artifact kind (commands/output-styles/themes/monitors). */
+  readonly artifacts: readonly ArtifactRef[];
+  /** SKILL.md dirs found under non-chosen candidate containers (uncovered by a split). */
+  readonly skillDirsOutsideContainer: number;
 }
 
-export function resolveSourceLayout(repoRoot: string): SourceLayout {
-  const dirs: string[] = [];
-  collectDirs(repoRoot, dirs);
-
-  const pluginRoot = resolvePluginRoot(repoRoot, dirs);
-  return {
-    skillsContainer: resolveSkillsContainer(repoRoot, dirs),
-    agentsContainer: resolveAgentsContainer(repoRoot, dirs),
-    pluginRoot,
-    mcp: resolveMcp(repoRoot, dirs, pluginRoot),
-    hooks: resolveHooks(repoRoot, dirs, pluginRoot),
-  };
+export interface LayoutResolver {
+  readonly skillsContainer: ContainerRef | null;
+  readonly skillDirsOutsideContainer: number;
+  /** The walk's memoized lister, shareable with enumerateSkills. */
+  readonly list: DirLister;
+  /** Resolve the rest of the layout (agents/plugin/mcp/hooks/artifacts), memoized. */
+  full(): SourceLayout;
 }
 
 // Non-source directories that must never win container resolution: a repo's
@@ -55,33 +61,66 @@ const SKIP_DIRS = new Set([
   "dist", "build", "out", "coverage", ".next", ".cache", ".turbo", ".github", "vendor",
 ]);
 
-function collectDirs(dir: string, acc: string[]): void {
-  acc.push(dir);
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (SKIP_DIRS.has(entry)) {
-      continue;
-    }
-    const full = join(dir, entry);
-    let s;
-    try {
-      s = statSync(full);
-    } catch {
-      continue;
-    }
-    if (s.isDirectory()) {
-      collectDirs(full, acc);
-    }
-  }
+/**
+ * Two-phase resolution: the skills container (needed just to gate the split) is
+ * computed eagerly from a single cached walk; agents/mcp/hooks/pluginRoot/artifacts
+ * — only consumed once a split actually fires — resolve lazily on full(). This keeps
+ * the common sub-threshold scan from reading and parsing every .md in the repo.
+ */
+export function createLayoutResolver(repoRoot: string): LayoutResolver {
+  const list = makeDirLister();
+  const dirs: string[] = [];
+  walkTree(repoRoot, { skipDirs: SKIP_DIRS, list, onDir: (d) => dirs.push(d) });
+
+  const counted = dirs.map((absDir) => ({
+    absDir,
+    relPath: toRel(repoRoot, absDir),
+    count: countSkillChildren(absDir, list),
+  }));
+  const best = pickBest(counted);
+  const skillsContainer = best === null ? null : { absDir: best.absDir, relPath: best.relPath };
+  const totalSkillDirs = counted.reduce((sum, c) => sum + c.count, 0);
+  const skillDirsOutsideContainer = totalSkillDirs - (best?.count ?? 0);
+
+  let full: SourceLayout | null = null;
+  return {
+    skillsContainer,
+    skillDirsOutsideContainer,
+    list,
+    full(): SourceLayout {
+      if (full === null) {
+        const pluginRoot = resolvePluginRoot(repoRoot, dirs, list);
+        full = {
+          skillsContainer,
+          skillDirsOutsideContainer,
+          agentsContainer: resolveAgentsContainer(repoRoot, dirs, list),
+          pluginRoot,
+          mcp: resolveMcp(repoRoot, dirs, list, pluginRoot),
+          hooks: resolveHooks(repoRoot, dirs, list, pluginRoot),
+          artifacts: resolveArtifacts(repoRoot, dirs, list, pluginRoot),
+        };
+      }
+      return full;
+    },
+  };
 }
 
-function toRel(repoRoot: string, absDir: string): string {
-  const r = relative(repoRoot, absDir);
+export function resolveSourceLayout(repoRoot: string): SourceLayout {
+  return createLayoutResolver(repoRoot).full();
+}
+
+function countSkillChildren(absDir: string, list: DirLister): number {
+  let count = 0;
+  for (const child of list(absDir)) {
+    if (child.isDirectory && list(join(absDir, child.name)).some((e) => e.isFile && e.name === "SKILL.md")) {
+      count++;
+    }
+  }
+  return count;
+}
+
+function toRel(repoRoot: string, abs: string): string {
+  const r = relative(repoRoot, abs);
   return r === "" ? "." : r.split(sep).join("/");
 }
 
@@ -111,66 +150,40 @@ function isBetter(a: { relPath: string; count: number }, b: { relPath: string; c
   return a.relPath < b.relPath;
 }
 
-function isDir(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
+function lastPathSegment(relPath: string): string {
+  const parts = relPath.split("/");
+  return parts[parts.length - 1] ?? relPath;
 }
 
-function resolveSkillsContainer(repoRoot: string, dirs: readonly string[]): ContainerRef | null {
-  const candidates = dirs.map((absDir) => {
-    let count = 0;
-    for (const child of safeReaddir(absDir)) {
-      if (isDir(join(absDir, child)) && existsSync(join(absDir, child, "SKILL.md"))) {
-        count++;
-      }
-    }
-    return { absDir, relPath: toRel(repoRoot, absDir), count };
-  });
-  const best = pickBest(candidates);
-  return best === null ? null : { absDir: best.absDir, relPath: best.relPath };
-}
-
-function resolveAgentsContainer(repoRoot: string, dirs: readonly string[]): AgentsRef | null {
-  const candidates = dirs.map((absDir) => {
-    const files = safeReaddir(absDir)
-      .filter((f) => f.endsWith(".md") && f !== "SKILL.md")
+function resolveAgentsContainer(repoRoot: string, dirs: readonly string[], list: DirLister): AgentsRef | null {
+  const score = (absDir: string): { absDir: string; relPath: string; count: number; files: string[] } => {
+    const files = list(absDir)
+      .filter((e) => e.isFile && e.name.endsWith(".md") && e.name !== "SKILL.md")
+      .map((e) => e.name)
       .filter((f) => isAgentFile(join(absDir, f)))
       .sort();
     return { absDir, relPath: toRel(repoRoot, absDir), count: files.length, files };
-  });
-  const best = pickBest(candidates);
+  };
+  // Conventional `agents/` dirs outrank arbitrary agent-shaped .md collections
+  // (docs/, examples/) that would otherwise win on raw count and become the core
+  // entry's git-subdir root. Scoring them first also skips parsing every other
+  // .md in the repo on the common conventional layout.
+  const named = dirs.filter((d) => lastPathSegment(toRel(repoRoot, d)) === "agents").map(score);
+  const bestNamed = pickBest(named);
+  if (bestNamed !== null) {
+    return { absDir: bestNamed.absDir, relPath: bestNamed.relPath, files: bestNamed.files };
+  }
+  const best = pickBest(dirs.map(score));
   return best === null ? null : { absDir: best.absDir, relPath: best.relPath, files: best.files };
 }
 
-function isAgentFile(filePath: string): boolean {
-  let raw: string;
-  try {
-    if (!statSync(filePath).isFile()) {
-      return false; // a directory whose name ends in .md, etc.
-    }
-    raw = readFileSync(filePath, "utf8");
-  } catch {
-    return false;
-  }
-  const fm = extractFrontmatter(raw);
-  return fm !== null && v.safeParse(AgentFrontmatterSchema, fm).success;
-}
-
-/** readdirSync that tolerates a directory vanishing/becoming unreadable mid-scan. */
-function safeReaddir(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-function resolvePluginRoot(repoRoot: string, dirs: readonly string[]): { relPath: string } | null {
+function resolvePluginRoot(
+  repoRoot: string,
+  dirs: readonly string[],
+  list: DirLister,
+): { relPath: string } | null {
   const candidates = dirs
-    .filter((d) => existsSync(join(d, ".claude-plugin", "plugin.json")))
+    .filter((d) => list(join(d, ".claude-plugin")).some((e) => e.isFile && e.name === "plugin.json"))
     .map((d) => ({ relPath: toRel(repoRoot, d), count: 1 }));
   const best = pickBest(candidates);
   return best === null ? null : { relPath: best.relPath };
@@ -179,12 +192,12 @@ function resolvePluginRoot(repoRoot: string, dirs: readonly string[]): { relPath
 function resolveMcp(
   repoRoot: string,
   dirs: readonly string[],
+  list: DirLister,
   pluginRoot: { relPath: string } | null,
 ): McpRef | null {
   const files = dirs
-    .map((d) => join(d, ".mcp.json"))
-    .filter((f) => existsSync(f))
-    .map((f) => ({ file: f, relPath: toRel(repoRoot, f) }))
+    .filter((d) => list(d).some((e) => e.isFile && e.name === ".mcp.json"))
+    .map((d) => ({ file: join(d, ".mcp.json"), relPath: toRel(repoRoot, join(d, ".mcp.json")) }))
     .sort((a, b) => preferUnder(pluginRoot, a.relPath, b.relPath));
   // Walk candidates in priority order: a malformed or non-MCP highest-priority
   // .mcp.json must not shadow a valid one elsewhere (returning null would silently
@@ -208,18 +221,63 @@ function resolveMcp(
 function resolveHooks(
   repoRoot: string,
   dirs: readonly string[],
+  list: DirLister,
   pluginRoot: { relPath: string } | null,
 ): { relPath: string } | null {
   const files = dirs
-    .flatMap((d) => [join(d, "hooks", "hooks.json"), join(d, "hooks.json")])
-    .filter((f) => existsSync(f))
-    .map((f) => toRel(repoRoot, f))
+    .flatMap((d) => {
+      const hits: string[] = [];
+      if (list(join(d, "hooks")).some((e) => e.isFile && e.name === "hooks.json")) {
+        hits.push(toRel(repoRoot, join(d, "hooks", "hooks.json")));
+      }
+      if (list(d).some((e) => e.isFile && e.name === "hooks.json")) {
+        hits.push(toRel(repoRoot, join(d, "hooks.json")));
+      }
+      return hits;
+    })
     .sort((a, b) => preferUnder(pluginRoot, a, b));
   const chosen = files[0];
   return chosen === undefined ? null : { relPath: chosen };
 }
 
-/** Sort comparator: paths under the plugin root come first, then shallower, then lexicographic. */
+const ARTIFACT_DIR_KINDS = ["commands", "output-styles", "themes"] as const;
+
+function resolveArtifacts(
+  repoRoot: string,
+  dirs: readonly string[],
+  list: DirLister,
+  pluginRoot: { relPath: string } | null,
+): ArtifactRef[] {
+  const out: ArtifactRef[] = [];
+  for (const kind of ARTIFACT_DIR_KINDS) {
+    const hits = dirs
+      .filter((d) => list(d).some((e) => e.isDirectory && e.name === kind))
+      .map((d) => toRel(repoRoot, join(d, kind)))
+      .sort((a, b) => preferUnder(pluginRoot, a, b));
+    if (hits[0] !== undefined) {
+      out.push({ kind, relPath: hits[0] });
+    }
+  }
+  // monitors uses the hooks-style two-location file probe.
+  const monitorHits = dirs
+    .flatMap((d) => {
+      const hits: string[] = [];
+      if (list(join(d, "monitors")).some((e) => e.isFile && e.name === "monitors.json")) {
+        hits.push(toRel(repoRoot, join(d, "monitors", "monitors.json")));
+      }
+      if (list(d).some((e) => e.isFile && e.name === "monitors.json")) {
+        hits.push(toRel(repoRoot, join(d, "monitors.json")));
+      }
+      return hits;
+    })
+    .sort((a, b) => preferUnder(pluginRoot, a, b));
+  if (monitorHits[0] !== undefined) {
+    out.push({ kind: "monitors", relPath: monitorHits[0] });
+  }
+  return out;
+}
+
+/** Sort comparator: paths under the plugin root come first, then shallower, then code-unit order. */
 function preferUnder(pluginRoot: { relPath: string } | null, a: string, b: string): number {
   if (pluginRoot !== null) {
     const aUnder = a.startsWith(`${pluginRoot.relPath}/`) ? 0 : 1;
@@ -230,7 +288,7 @@ function preferUnder(pluginRoot: { relPath: string } | null, a: string, b: strin
   }
   const segA = a.split("/").length;
   const segB = b.split("/").length;
-  return segA !== segB ? segA - segB : a.localeCompare(b);
+  return segA !== segB ? segA - segB : byCodeUnit(a, b);
 }
 
 function extractServers(parsed: unknown): Record<string, unknown> | null {
@@ -276,6 +334,11 @@ function classifyServers(servers: Record<string, unknown>): McpServerType {
   return "unknown";
 }
 
+// A bare relative script path ("dist/server.js", "scripts/run.py") references repo
+// files just as surely as "./dist/server.js" does — while package specifiers like
+// "@scope/pkg" contain "/" but no script extension, keeping them classified as packages.
+const SCRIPT_EXT = /\.(?:js|mjs|cjs|ts|mts|cts|py|sh|rb)$/;
+
 function classifyOne(server: unknown): McpServerType {
   if (server === null || typeof server !== "object") {
     return "unknown";
@@ -290,7 +353,11 @@ function classifyOne(server: unknown): McpServerType {
   }
   const args = Array.isArray(s["args"]) ? s["args"].filter((a): a is string => typeof a === "string") : [];
   const refsLocal = (x: string): boolean =>
-    x.startsWith("./") || x.startsWith("../") || x.startsWith("/") || x.includes("${");
+    x.startsWith("./") ||
+    x.startsWith("../") ||
+    x.startsWith("/") ||
+    x.includes("${") ||
+    (x.includes("/") && SCRIPT_EXT.test(x));
   if (refsLocal(cmd) || args.some(refsLocal)) {
     return "repo-local";
   }

@@ -1,4 +1,6 @@
-import { slugify, stripCommonPrefix, uniqueSlugs } from "./slugify.ts";
+import * as v from "valibot";
+import { byCodeUnit, slugify, stripCommonPrefix, uniqueSlugs } from "./slugify.ts";
+import { RawGroupSchema, type RawGroup } from "../schemas/rawGroups.ts";
 import type { SkillMeta } from "./skillMeta.ts";
 
 export interface SkillGroup {
@@ -8,24 +10,25 @@ export interface SkillGroup {
 export type Grouping = SkillGroup[];
 
 /**
- * Strategy a caller may request.
+ * Strategies a caller may request (single source of truth for the flag validator).
  * - `auto` (default): deterministic-only cascade (metadata → directory → name-prefix); the injected grouper is never invoked.
  * - `auto-llm`: deterministic-first; the injected grouper rescues only when deterministic finds no clean partition.
  * - `llm`: prefer the injected grouper, then cascade to deterministic if it yields nothing acceptable.
  */
-export type ClusterStrategy = "auto" | "auto-llm" | "llm" | "metadata" | "directory" | "name-prefix";
+export const CLUSTER_STRATEGIES = ["auto", "auto-llm", "llm", "metadata", "directory", "name-prefix"] as const;
+export type ClusterStrategy = (typeof CLUSTER_STRATEGIES)[number];
 /** Strategy actually used to produce a result. */
 export type ResolvedStrategy = "marker" | "llm" | "metadata" | "directory" | "name-prefix";
 
 export interface PartitionResult {
   readonly strategy: ResolvedStrategy;
   readonly groups: Grouping;
+  /** Advisory messages (e.g. stale committed-marker paths) for the caller to surface. */
+  readonly warnings?: readonly string[];
 }
 
 /** Injected LLM grouper — returns slugged buckets of skill dir names. */
-export type GroupSkillsFn = (
-  skills: readonly SkillMeta[],
-) => Promise<{ slug: string; members: string[] }[]>;
+export type GroupSkillsFn = (skills: readonly SkillMeta[]) => Promise<RawGroup[]>;
 
 /** A frozen group from a committed marker file: skill *paths* (e.g. "./foo/"). */
 export interface MarkerGroup {
@@ -102,7 +105,7 @@ function dropTrailingLanguage(name: string): string {
 // Gate + normalization
 // ---------------------------------------------------------------------------
 
-interface RawGroup {
+interface KeyedBucket {
   key: string;
   skills: SkillMeta[];
 }
@@ -122,7 +125,7 @@ function groupByKey(
 }
 
 function normalizeAndGate(rawByKey: Map<string, SkillMeta[]>, total: number): Grouping | null {
-  let groups: RawGroup[] = [...rawByKey].map(([key, skills]) => ({ key, skills }));
+  let groups: KeyedBucket[] = [...rawByKey].map(([key, skills]) => ({ key, skills }));
   if (groups.length === 0) {
     return null;
   }
@@ -137,7 +140,7 @@ function normalizeAndGate(rawByKey: Map<string, SkillMeta[]>, total: number): Gr
   return finalizeGroups(groups.map((g) => ({ slug: slugify(g.key), skills: g.skills })));
 }
 
-function collapseToFit(groups: RawGroup[], maxK: number): RawGroup[] {
+function collapseToFit(groups: KeyedBucket[], maxK: number): KeyedBucket[] {
   if (groups.length <= maxK) {
     return groups;
   }
@@ -148,7 +151,7 @@ function collapseToFit(groups: RawGroup[], maxK: number): RawGroup[] {
   return mergeSmallestIntoMisc(collapsed, maxK);
 }
 
-function collapseByLeadingSegment(groups: readonly RawGroup[]): RawGroup[] {
+function collapseByLeadingSegment(groups: readonly KeyedBucket[]): KeyedBucket[] {
   const m = new Map<string, SkillMeta[]>();
   for (const g of groups) {
     const lead = g.key.split("-")[0] ?? g.key;
@@ -159,12 +162,12 @@ function collapseByLeadingSegment(groups: readonly RawGroup[]): RawGroup[] {
   return [...m].map(([key, skills]) => ({ key, skills }));
 }
 
-function mergeSmallestIntoMisc(groups: readonly RawGroup[], maxK: number): RawGroup[] {
+function mergeSmallestIntoMisc(groups: readonly KeyedBucket[], maxK: number): KeyedBucket[] {
   if (groups.length <= maxK) {
     return [...groups];
   }
   const sorted = [...groups].sort(
-    (a, b) => a.skills.length - b.skills.length || a.key.localeCompare(b.key),
+    (a, b) => a.skills.length - b.skills.length || byCodeUnit(a.key, b.key),
   );
   const removeCount = groups.length - maxK + 1;
   const toMerge = sorted.slice(0, removeCount);
@@ -178,7 +181,7 @@ function mergeSmallestIntoMisc(groups: readonly RawGroup[], maxK: number): RawGr
   return [...keep, { key: MISC, skills: miscSkills }];
 }
 
-function coalesceTiny(groups: readonly RawGroup[], minSize: number): RawGroup[] {
+function coalesceTiny(groups: readonly KeyedBucket[], minSize: number): KeyedBucket[] {
   const big = groups.filter((g) => g.skills.length >= minSize);
   const tiny = groups.filter((g) => g.skills.length < minSize);
   if (tiny.length === 0) {
@@ -198,9 +201,9 @@ function finalizeGroups(groups: readonly { slug: string; skills: SkillMeta[] }[]
   return groups
     .map((g, i) => ({
       slug: slugs[i] ?? g.slug,
-      skills: [...g.skills].sort((a, b) => a.dir.localeCompare(b.dir)),
+      skills: [...g.skills].sort((a, b) => byCodeUnit(a.dir, b.dir)),
     }))
-    .sort((a, b) => a.slug.localeCompare(b.slug));
+    .sort((a, b) => byCodeUnit(a.slug, b.slug));
 }
 
 // ---------------------------------------------------------------------------
@@ -224,24 +227,14 @@ function acceptRawGroups(groups: readonly SkillGroup[], total: number): Grouping
   return finalizeGroups(groups);
 }
 
-function mapRawGroups(skills: readonly SkillMeta[], raw: readonly unknown[]): SkillGroup[] {
+/** Map schema-validated raw buckets onto SkillMeta groups, dropping hallucinated/duplicate members. */
+function mapRawGroups(skills: readonly SkillMeta[], raw: readonly RawGroup[]): SkillGroup[] {
   const byDir = new Map(skills.map((s) => [s.dir, s]));
   const assigned = new Set<string>();
   const out: SkillGroup[] = [];
   for (const item of raw) {
-    // Defensive: tolerate a malformed grouper response / poisoned cache element.
-    if (item === null || typeof item !== "object") {
-      continue;
-    }
-    const obj = item as { slug?: unknown; members?: unknown };
-    if (typeof obj.slug !== "string" || !Array.isArray(obj.members)) {
-      continue;
-    }
     const gs: SkillMeta[] = [];
-    for (const m of obj.members) {
-      if (typeof m !== "string") {
-        continue;
-      }
+    for (const m of item.members) {
       const s = byDir.get(m);
       if (s !== undefined && !assigned.has(s.dir)) {
         gs.push(s);
@@ -249,24 +242,57 @@ function mapRawGroups(skills: readonly SkillMeta[], raw: readonly unknown[]): Sk
       }
     }
     if (gs.length > 0) {
-      out.push({ slug: slugify(obj.slug), skills: gs });
+      out.push({ slug: slugify(item.slug), skills: gs });
     }
   }
   return out;
 }
 
-function buildMarkerGroups(
+/** Keep only items matching the shared RawGroup schema — the injected-fn seam is untrusted. */
+function validRawItems(raw: readonly unknown[]): RawGroup[] {
+  return raw.filter((g): g is RawGroup => v.safeParse(RawGroupSchema, g).success);
+}
+
+/**
+ * Would this raw grouping pass the verbatim acceptance gate? Backends use this to
+ * avoid caching a parseable-but-rejected response, which would otherwise be replayed
+ * from cache forever and permanently disable the LLM rescue for that skill set.
+ */
+export function rawGroupsAcceptable(skills: readonly SkillMeta[], raw: readonly RawGroup[]): boolean {
+  return acceptRawGroups(mapRawGroups(skills, validRawItems(raw)), skills.length) !== null;
+}
+
+interface MarkerMatch {
+  /** Matched groups only (unfinalized, no misc bucket). */
+  readonly groups: SkillGroup[];
+  /** Marker paths that resolved to no skill directory. */
+  readonly unmatched: string[];
+  /** Skills the marker does not mention. */
+  readonly leftover: SkillMeta[];
+}
+
+function matchMarkerGroups(
   skills: readonly SkillMeta[],
   markerGroups: readonly MarkerGroup[],
-): Grouping {
+): MarkerMatch {
   const byPath = new Map(skills.map((s) => [normalizePath(s.path), s]));
+  // Second-chance lookup by final path segment: --write-marker emits container-relative
+  // paths ("./<dir>/"), but hand-edited markers often use repo-root-relative paths like
+  // the sibling `skills` field — the directory name resolves either convention.
+  const byDir = new Map(skills.map((s) => [s.dir, s]));
   const assigned = new Set<string>();
   const out: SkillGroup[] = [];
+  const unmatched: string[] = [];
   for (const mg of markerGroups) {
     const gs: SkillMeta[] = [];
     for (const p of mg.skills) {
-      const s = byPath.get(normalizePath(p));
-      if (s !== undefined && !assigned.has(s.dir)) {
+      const norm = normalizePath(p);
+      const s = byPath.get(norm) ?? byDir.get(lastSegment(norm));
+      if (s === undefined) {
+        unmatched.push(p);
+        continue;
+      }
+      if (!assigned.has(s.dir)) {
         gs.push(s);
         assigned.add(s.dir);
       }
@@ -275,15 +301,16 @@ function buildMarkerGroups(
       out.push({ slug: slugify(mg.slug), skills: gs });
     }
   }
-  const leftover = skills.filter((s) => !assigned.has(s.dir));
-  if (leftover.length > 0) {
-    out.push({ slug: MISC, skills: leftover });
-  }
-  return finalizeGroups(out);
+  return { groups: out, unmatched, leftover: skills.filter((s) => !assigned.has(s.dir)) };
 }
 
 function normalizePath(p: string): string {
   return p.endsWith("/") ? p : `${p}/`;
+}
+
+function lastSegment(p: string): string {
+  const parts = p.split("/").filter((seg) => seg !== "" && seg !== ".");
+  return parts[parts.length - 1] ?? p;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,12 +348,35 @@ export async function partitionSkills(
   options: PartitionOptions = {},
 ): Promise<PartitionResult | null> {
   const strategy = options.strategy ?? "auto";
+  const warnings: string[] = [];
+  const withWarnings = (r: PartitionResult | null): PartitionResult | null =>
+    r === null || warnings.length === 0 ? r : { ...r, warnings: [...(r.warnings ?? []), ...warnings] };
 
-  // A committed marker grouping always wins, verbatim.
+  // A committed marker grouping wins verbatim — but only when it actually matches.
   if (options.markerGroups !== undefined && options.markerGroups.length > 0) {
-    const groups = buildMarkerGroups(skills, options.markerGroups);
-    if (groups.length >= 1) {
-      return { strategy: "marker", groups };
+    const { groups: matched, unmatched, leftover } = matchMarkerGroups(skills, options.markerGroups);
+    if (matched.length === 0) {
+      // Fully stale marker: honoring it would emit a single bogus "misc" slice
+      // announced as "via committed marker" — ignore it and fall through to the
+      // requested strategy instead.
+      warnings.push(
+        `no path in .ccpluginizer.json "groups" matched a skill directory (expected paths like "./<skill-dir>/"); ignoring the frozen split — re-run scan --write-marker to refresh it.`,
+      );
+    } else {
+      if (unmatched.length > 0) {
+        const preview = unmatched.slice(0, 3).join(", ") + (unmatched.length > 3 ? ", …" : "");
+        warnings.push(
+          `${String(unmatched.length)} path(s) in .ccpluginizer.json "groups" match no skill directory (${preview}); re-run scan --write-marker to refresh the frozen split.`,
+        );
+      }
+      let groups = matched;
+      if (leftover.length > 0) {
+        warnings.push(
+          `${String(leftover.length)} skill(s) not listed in .ccpluginizer.json "groups" were placed in a "${MISC}" slice; re-run scan --write-marker to refresh the frozen split.`,
+        );
+        groups = [...matched, { slug: MISC, skills: leftover }];
+      }
+      return withWarnings({ strategy: "marker", groups: finalizeGroups(groups) });
     }
   }
 
@@ -334,31 +384,31 @@ export async function partitionSkills(
     if (options.group === undefined) {
       return null;
     }
-    const raw = await options.group(skills);
+    const raw = validRawItems(await options.group(skills));
     return acceptRawGroups(mapRawGroups(skills, raw), skills.length);
   };
 
   if (strategy === "auto") {
-    return deterministicCascade(skills);
+    return withWarnings(deterministicCascade(skills));
   }
 
   if (strategy === "llm") {
     const llm = await runLlm();
     if (llm !== null) {
-      return { strategy: "llm", groups: llm };
+      return withWarnings({ strategy: "llm", groups: llm });
     }
-    return deterministicCascade(skills);
+    return withWarnings(deterministicCascade(skills));
   }
 
   if (strategy === "auto-llm") {
     const deterministic = deterministicCascade(skills);
     if (deterministic !== null) {
-      return deterministic;
+      return withWarnings(deterministic);
     }
     const llm = await runLlm();
-    return llm === null ? null : { strategy: "llm", groups: llm };
+    return llm === null ? null : withWarnings({ strategy: "llm", groups: llm });
   }
 
   const groups = deterministicFns[strategy](skills);
-  return groups === null ? null : { strategy, groups };
+  return groups === null ? null : withWarnings({ strategy, groups });
 }

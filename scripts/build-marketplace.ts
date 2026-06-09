@@ -24,18 +24,24 @@ const tombstoned = new Set(
 
 const entries = readdirSync(ENTRIES_DIR)
   .filter((f) => f.endsWith(".json"))
-  .map((f) => {
+  .flatMap((f) => {
     const raw = readFileSync(join(ENTRIES_DIR, f), "utf8");
     const parsed: unknown = JSON.parse(raw);
-    const result = v.safeParse(MarketplaceEntrySchema, parsed);
-    if (!result.success) {
-      console.error(`Invalid entry ${f}:`, result.issues);
-      process.exit(1);
-    }
-    return result.output;
+    // scan emits a JSON array when a split produces multiple entries — accept both
+    // shapes per file, mirroring `ccpluginizer validate`.
+    const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+    return items.map((item, i) => {
+      const result = v.safeParse(MarketplaceEntrySchema, item);
+      if (!result.success) {
+        console.error(`Invalid entry ${f}${items.length > 1 ? `[${String(i)}]` : ""}:`, result.issues);
+        process.exit(1);
+      }
+      return result.output;
+    });
   })
   .filter((e) => !tombstoned.has(e.name))
-  .sort((a, b) => a.name.localeCompare(b.name));
+  // code-unit compare: localeCompare ordering varies across machines/ICU builds
+  .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
 const marketplace: MarketplaceFile = {
   name: "ccp-marketplace",

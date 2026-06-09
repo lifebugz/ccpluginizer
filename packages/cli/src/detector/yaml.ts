@@ -24,7 +24,11 @@ export function extractFrontmatter(fileContent: string): Record<string, unknown>
 
 export function parseYamlFrontmatter(body: string): Record<string, unknown> {
   const lines = body.replace(/\r\n?/g, "\n").split("\n");
-  const out: Record<string, unknown> = {};
+  // Null prototype: frontmatter keys are untrusted, and `out["__proto__"] = v` on a
+  // plain object would invoke the prototype setter — the key vanishes from own keys
+  // and its map value becomes the prototype, leaking phantom name/description/metadata
+  // through schema validation. With no prototype, `__proto__` is an ordinary own key.
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let i = 0;
   while (i < lines.length) {
     const line = lines[i] ?? "";
@@ -140,14 +144,27 @@ function collectNested(
   while (peek < lines.length && (lines[peek] ?? "").trim() === "") {
     peek++;
   }
+  // No indented content: the deleted v0.1.1 parser yielded "" for a bare `key:`,
+  // which passed `description: v.string()` and kept the skill detected — preserve
+  // that rather than returning null and silently dropping the file.
   if (peek >= lines.length) {
-    return { value: null, next: start };
+    return { value: "", next: start };
   }
   const firstLine = lines[peek] ?? "";
   if (leadingSpaces(firstLine) <= baseIndent) {
-    return { value: null, next: start };
+    return { value: "", next: start };
   }
   const firstTrimmed = firstLine.trim();
+  const childIndent = leadingSpaces(firstLine);
+
+  // A plain scalar whose value starts on the following line (legal YAML:
+  // `description:\n  Send SMS…`): not a list item and no mapping colon — fold it
+  // like a continuation rather than mis-reading it as an empty map, which would
+  // fail schema validation and silently drop the skill/agent.
+  if (firstTrimmed !== "-" && !firstTrimmed.startsWith("- ") && !firstTrimmed.includes(":")) {
+    const cont = collectPlainContinuation(lines, peek);
+    return { value: cont.lines.join(" "), next: cont.next };
+  }
 
   if (firstTrimmed === "-" || firstTrimmed.startsWith("- ")) {
     const arr: unknown[] = [];
@@ -160,6 +177,9 @@ function collectNested(
       if (leadingSpaces(line) <= baseIndent) {
         break;
       }
+      if (leadingSpaces(line) > childIndent) {
+        continue; // deeper than the first item — nested content we don't model; skip, don't flatten
+      }
       const t = line.trim();
       if (t === "-") {
         arr.push(null);
@@ -170,7 +190,9 @@ function collectNested(
     return { value: arr, next: i };
   }
 
-  const map: Record<string, unknown> = {};
+  // Null prototype for the same reason as the top-level accumulator: a nested
+  // `__proto__:` key must become an ordinary own property, not a prototype swap.
+  const map: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let i = start;
   for (; i < lines.length; i++) {
     const line = lines[i] ?? "";
@@ -180,6 +202,9 @@ function collectNested(
     }
     if (leadingSpaces(line) <= baseIndent) {
       break;
+    }
+    if (leadingSpaces(line) > childIndent) {
+      continue; // grandchild of a one-level map — skip; flattening it would overwrite a real sibling key
     }
     const ci = t.indexOf(":");
     if (ci === -1) {

@@ -1,8 +1,9 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
 import { extractFrontmatter } from "./yaml.ts";
+import { makeDirLister, type DirLister } from "./fsWalk.ts";
 
 /** One skill's clustering-relevant metadata, plus its container-relative path. */
 export interface SkillMeta {
@@ -13,45 +14,30 @@ export interface SkillMeta {
   readonly name: string;
   readonly description: string;
   readonly product?: string;
-  readonly language?: string;
-  readonly tags?: readonly string[];
-  readonly category?: string;
 }
 
 /**
  * Enumerate every direct child directory of `containerDir` that holds a valid
  * SKILL.md, returning per-skill metadata sorted by directory name (deterministic).
- * A non-existent container yields an empty array.
+ * A non-existent container yields an empty array. Pass the layout resolver's lister
+ * to reuse its cached listings instead of re-walking the container.
  */
-export function enumerateSkills(containerDir: string): SkillMeta[] {
-  let names: string[];
-  try {
-    if (!statSync(containerDir).isDirectory()) {
-      return [];
-    }
-    names = readdirSync(containerDir).sort();
-  } catch {
-    return []; // container missing / unreadable (EACCES) / vanished since layout resolution — skip
-  }
+export function enumerateSkills(containerDir: string, list: DirLister = makeDirLister()): SkillMeta[] {
   const out: SkillMeta[] = [];
-  for (const dir of names) {
+  const children = list(containerDir)
+    .filter((e) => e.isDirectory)
+    .map((e) => e.name)
+    .sort();
+  for (const dir of children) {
     const skillPath = join(containerDir, dir);
-    try {
-      if (!statSync(skillPath).isDirectory()) {
-        continue; // not a directory — skip
-      }
-    } catch {
-      continue; // broken symlink / vanished between readdir and stat — skip, don't crash
+    if (!list(skillPath).some((e) => e.isFile && e.name === "SKILL.md")) {
+      continue; // no SKILL.md (or a directory named SKILL.md) — not a skill
     }
-    const skillMd = join(skillPath, "SKILL.md");
     let raw: string;
     try {
-      if (!statSync(skillMd).isFile()) {
-        continue; // a directory named SKILL.md, etc. — not a skill
-      }
-      raw = readFileSync(skillMd, "utf8");
+      raw = readFileSync(join(skillPath, "SKILL.md"), "utf8");
     } catch {
-      continue; // missing / EISDIR / EACCES — skip rather than crash
+      continue; // vanished / EACCES between listing and read — skip rather than crash
     }
     const fm = extractFrontmatter(raw);
     if (fm === null) {
@@ -67,15 +53,11 @@ export function enumerateSkills(containerDir: string): SkillMeta[] {
 }
 
 function toMeta(dir: string, fm: v.InferOutput<typeof SkillFrontmatterSchema>): SkillMeta {
-  const category = fm.category ?? fm.metadata?.category;
   return {
     path: `./${dir}/`,
     dir,
     name: fm.name ?? dir,
     description: fm.description,
     ...(fm.metadata?.product !== undefined ? { product: fm.metadata.product } : {}),
-    ...(fm.metadata?.language !== undefined ? { language: fm.metadata.language } : {}),
-    ...(fm.tags !== undefined ? { tags: fm.tags } : {}),
-    ...(category !== undefined ? { category } : {}),
   };
 }

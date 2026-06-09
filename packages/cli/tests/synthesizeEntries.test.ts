@@ -3,64 +3,11 @@ import { join } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { synthesizeEntry, synthesizeEntries } from "../src/detector/synthesize.ts";
+import { makeNestedPlugin } from "./helpers.ts";
 import type { MarketplaceEntry } from "../src/schemas/marketplaceEntry.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
 
-interface PluginOpts {
-  products: Record<string, number>;
-  marketplace?: boolean;
-  hooks?: boolean;
-  commands?: boolean;
-  repoLocalMcp?: boolean;
-  marker?: Record<string, unknown>;
-}
-
-/** Scaffold a telnyx-shaped nested plugin in a temp dir. */
-function makeNestedPlugin(opts: PluginOpts): string {
-  const root = mkdtempSync(join(tmpdir(), "ccp-nested-"));
-  const plugin = join(root, "providers", "claude", "plugin");
-  mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
-  writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "telnyx" }));
-  if (opts.marketplace === true) {
-    mkdirSync(join(root, ".claude-plugin"), { recursive: true });
-    writeFileSync(
-      join(root, ".claude-plugin", "marketplace.json"),
-      JSON.stringify({ name: "telnyx", plugins: [{ name: "telnyx", source: "./providers/claude/plugin/" }] }),
-    );
-  }
-  const mcp = opts.repoLocalMcp === true
-    ? { mcpServers: { local: { command: "node", args: ["./server/index.js"] } } }
-    : { mcpServers: { telnyx: { type: "http", url: "https://api.telnyx.com/v2/mcp" } } };
-  writeFileSync(join(plugin, ".mcp.json"), JSON.stringify(mcp));
-  mkdirSync(join(plugin, "agents"), { recursive: true });
-  writeFileSync(
-    join(plugin, "agents", "telnyx-developer.md"),
-    "---\nname: telnyx-developer\ndescription: Telnyx dev agent.\n---\n",
-  );
-  if (opts.hooks === true) {
-    mkdirSync(join(plugin, "hooks"), { recursive: true });
-    writeFileSync(join(plugin, "hooks", "hooks.json"), JSON.stringify({ hooks: {} }));
-  }
-  if (opts.commands === true) {
-    mkdirSync(join(plugin, "commands"), { recursive: true });
-    writeFileSync(join(plugin, "commands", "dothing.md"), "---\ndescription: Do a thing.\n---\n");
-  }
-  if (opts.marker !== undefined) {
-    writeFileSync(join(root, ".ccpluginizer.json"), JSON.stringify(opts.marker));
-  }
-  for (const [product, count] of Object.entries(opts.products)) {
-    for (let i = 0; i < count; i++) {
-      const dir = join(plugin, "skills", `telnyx-${product}-${String(i)}`);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        join(dir, "SKILL.md"),
-        `---\nname: telnyx-${product}-${String(i)}\ndescription: ${product} skill ${String(i)}.\nmetadata:\n  product: ${product}\n---\n`,
-      );
-    }
-  }
-  return root;
-}
 
 describe("synthesizeEntries: back-compat (no split)", () => {
   test("sub-threshold repo returns a single entry identical to synthesizeEntry", async () => {
@@ -375,5 +322,86 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
     });
     expect(res.split).toBeNull();
     expect(res.splitAttemptedButEmpty).toBe(false);
+  });
+});
+
+describe("synthesizeEntries: regression fixes", () => {
+  test("umbrella entry is strict:false when the repo has no plugin root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ccp-flat-"));
+    try {
+      for (const p of ["alpha", "beta"]) {
+        for (let i = 0; i < 4; i++) {
+          const dir = join(root, "skills", `${p}-${String(i)}`);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "SKILL.md"), `---\ndescription: ${p} ${String(i)}.\nmetadata:\n  product: ${p}\n---\n`);
+        }
+      }
+      const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/flat", umbrella: true, strategy: "metadata", minSkillsToSplit: 2 });
+      const umbrella = res.entries.find((e) => e.name === "test-flat");
+      expect(umbrella).toBeDefined();
+      expect(umbrella?.strict).toBe(false); // strict needs plugin.json at the source root
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("--no-split with a freeze-only marker still detects skills (no bare entry)", async () => {
+    const root = makeNestedPlugin({
+      products: { messaging: 4, voice: 4 },
+      marker: {
+        name: "telnyx",
+        core: true,
+        groups: [
+          { slug: "messaging", skills: [0, 1, 2, 3].map((i) => `./telnyx-messaging-${String(i)}/`) },
+          { slug: "voice", skills: [0, 1, 2, 3].map((i) => `./telnyx-voice-${String(i)}/`) },
+        ],
+      },
+    });
+    try {
+      const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/telnyx", split: false });
+      expect(res.entries.length).toBe(1);
+      const entry = res.entries[0];
+      expect(entry?.name).toBe("telnyx");
+      expect(Array.isArray(entry?.skills)).toBe(true); // detection ran; skills were not dropped
+      expect((entry?.skills ?? []).length).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("core is never rooted at a container that would auto-load skills/", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ccp-rootagents-"));
+    try {
+      writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { x: { type: "http", url: "https://x" } } }));
+      writeFileSync(join(root, "dev.md"), "---\nname: dev\ndescription: Dev agent.\n---\n");
+      for (const p of ["alpha", "beta"]) {
+        for (let i = 0; i < 4; i++) {
+          const dir = join(root, "skills", `${p}-${String(i)}`);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "SKILL.md"), `---\ndescription: ${p} ${String(i)}.\nmetadata:\n  product: ${p}\n---\n`);
+        }
+      }
+      const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/rooty", strategy: "metadata", minSkillsToSplit: 2 });
+      const core = res.entries.find((e) => e.name.endsWith("-core"));
+      expect(core).toBeDefined();
+      expect(core?.agents).toBeUndefined(); // agents dropped rather than auto-loading every skill
+      expect((core?.source as { path?: string }).path).toBe("skills");
+      expect(res.warnings.some((w) => w.includes("auto-load"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("warns when skills exist outside the chosen container", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
+    try {
+      const stray = join(root, "extra", "stray-skill");
+      mkdirSync(stray, { recursive: true });
+      writeFileSync(join(stray, "SKILL.md"), "---\ndescription: stray.\n---\n");
+      const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/telnyx", strategy: "metadata", minSkillsToSplit: 2 });
+      expect(res.warnings.some((w) => w.includes("outside"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

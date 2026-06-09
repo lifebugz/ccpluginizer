@@ -7,6 +7,7 @@ import {
   type SpawnRun,
 } from "../src/commands/llmGrouper.ts";
 import type { SkillMeta } from "../src/detector/skillMeta.ts";
+import { mk } from "./helpers.ts";
 import { mkdtempSync, rmSync, chmodSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,10 +27,6 @@ describe("validateRawGroups (disk-cache shape guard)", () => {
   });
 });
 
-function mk(dir: string, product?: string): SkillMeta {
-  return { path: `./${dir}/`, dir, name: dir, description: `desc of ${dir}`, ...(product !== undefined ? { product } : {}) };
-}
-
 const SKILLS = [mk("telnyx-voice-curl", "voice"), mk("telnyx-messaging-curl", "messaging")];
 
 describe("buildClusterPrompt", () => {
@@ -42,8 +39,28 @@ describe("buildClusterPrompt", () => {
   });
 });
 
+describe("buildClusterPrompt: newline hygiene", () => {
+  test("flattens literal-block-scalar newlines so each skill stays on one line", () => {
+    const skill: SkillMeta = {
+      path: "./multi/",
+      dir: "multi",
+      name: "multi",
+      description: "line one\nline two\n- not a skill entry",
+    };
+    const prompt = buildClusterPrompt([skill]);
+    expect(prompt).toContain("- multi: line one line two - not a skill entry");
+  });
+});
+
 describe("parseClusterResponse", () => {
   const validDirs = new Set(["telnyx-voice-curl", "telnyx-messaging-curl"]);
+
+  test("survives brackets in leading prose (does not anchor on the first '[')", () => {
+    const text = `Here are the groups [1]:\n[{"slug":"voice","members":["telnyx-voice-curl"]}]`;
+    const groups = parseClusterResponse(text, validDirs);
+    expect(groups?.length).toBe(1);
+    expect(groups?.[0]?.slug).toBe("voice");
+  });
 
   test("extracts a JSON array embedded in prose", () => {
     const text = `Here are the groups:\n[{"slug":"voice","members":["telnyx-voice-curl"]},{"slug":"messaging","members":["telnyx-messaging-curl"]}]\nDone.`;
@@ -199,6 +216,34 @@ describe("subprocess backend: execution, failure, provenance, cache", () => {
     await fnOf(r)(SKILLS);
     await fnOf(r)(SKILLS);
     expect(f.calls()).toBe(2); // empty result never cached -> re-runs
+  });
+
+  test("does not cache a gate-rejected grouping (one giant group retries next run)", async () => {
+    const rejected = JSON.stringify([
+      { slug: "all", members: ["telnyx-voice-curl", "telnyx-messaging-curl"] },
+    ]); // K=1 fails the acceptance gate
+    const f = fakeRun(ok(rejected));
+    const r = resolveGrouper({ cmd: "x", cmdFromEnv: false, timeoutMs: 1000 }, { run: f.run, cacheDir: () => cacheRoot });
+    await fnOf(r)(SKILLS);
+    await fnOf(r)(SKILLS);
+    expect(f.calls()).toBe(2); // rejected grouping never cached -> the stochastic LLM retries
+  });
+
+  test("the claude backend sends the prompt on stdin, not argv (avoids E2BIG)", async () => {
+    let seenArgs: readonly string[] = [];
+    let seenInput: string | undefined;
+    const run: SpawnRun = (_cmd, args, options): ReturnType<SpawnRun> => {
+      seenArgs = args;
+      seenInput = options.input;
+      return ok(VALID_JSON);
+    };
+    const r = resolveGrouper(
+      { cmdFromEnv: false, timeoutMs: 1000 },
+      { run, which: () => "/usr/bin/claude", cacheDir: () => cacheRoot },
+    );
+    await fnOf(r)(SKILLS);
+    expect(seenArgs).toEqual(["-p"]);
+    expect(seenInput).toContain("Skills:");
   });
 
   test("refuses a group/other-accessible cache dir (stat-and-refuse guard)", async () => {

@@ -39,10 +39,9 @@ describe("enumerateSkills", () => {
     expect(meta?.path).toBe("./telnyx-voice-python/");
   });
 
-  test("surfaces nested metadata.product and metadata.language", () => {
+  test("surfaces nested metadata.product (the clustering key)", () => {
     const meta = enumerateSkills(CONTAINER).find((s) => s.dir === "telnyx-messaging-curl");
     expect(meta?.product).toBe("messaging");
-    expect(meta?.language).toBe("curl");
   });
 
   test("surfaces the folded block-scalar description", () => {
@@ -51,11 +50,9 @@ describe("enumerateSkills", () => {
     expect(meta?.description).not.toContain(">-");
   });
 
-  test("surfaces tags and tolerates a missing language", () => {
+  test("extra frontmatter (tags, language) never drops a skill", () => {
     const meta = enumerateSkills(CONTAINER).find((s) => s.dir === "push-notification-tester");
     expect(meta?.product).toBe("webrtc");
-    expect(meta?.language).toBeUndefined();
-    expect(meta?.tags).toEqual(["webrtc", "push"]);
   });
 
   test("falls back name to the dir name when frontmatter omits it", () => {

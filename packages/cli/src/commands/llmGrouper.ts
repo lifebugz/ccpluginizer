@@ -3,16 +3,12 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { GroupSkillsFn } from "../detector/partition.ts";
+import * as v from "valibot";
+import { rawGroupsAcceptable, type GroupSkillsFn } from "../detector/partition.ts";
+import { RawGroupSchema, RawGroupsSchema, type RawGroup } from "../schemas/rawGroups.ts";
 import type { SkillMeta } from "../detector/skillMeta.ts";
 
-export interface RawGroup {
-  readonly slug: string;
-  readonly members: string[];
-}
-
-/** Default backend timeout (ms); overridable per call via resolveLlmConfig's timeoutMs. */
-export const CLUSTER_TIMEOUT_DEFAULT_MS = 120_000;
+export type { RawGroup } from "../schemas/rawGroups.ts";
 
 /** Cap a backend's stdout so a runaway/garbage response cannot exhaust memory. */
 export const CLUSTER_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -46,7 +42,10 @@ export interface ResolveGrouperOpts {
 export function buildClusterPrompt(skills: readonly SkillMeta[]): string {
   const lines = skills.map((s) => {
     const product = s.product !== undefined ? ` [product=${s.product}]` : "";
-    const desc = s.description.slice(0, 140);
+    // Flatten whitespace before truncating: a `|` literal block scalar keeps \n,
+    // which would break the one-line-per-skill format the model relies on (stray
+    // lines starting "- " would masquerade as extra skill entries).
+    const desc = s.description.replace(/\s+/g, " ").trim().slice(0, 140);
     return `- ${s.dir}${product}: ${desc}`;
   });
   return [
@@ -66,60 +65,87 @@ export function buildClusterPrompt(skills: readonly SkillMeta[]): string {
   ].join("\n");
 }
 
+// Leading prose often contains brackets ("Here are the groups [1]:"), so a greedy
+// first-[ … last-] slice would poison JSON.parse. Scan a bounded number of balanced
+// [...] candidates instead and accept the first that yields a valid group.
+const MAX_ARRAY_CANDIDATES = 50;
+
 /** Parse the model's response into validated groups, dropping hallucinated members. */
 export function parseClusterResponse(text: string, validDirs: ReadonlySet<string>): RawGroup[] | null {
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start === -1 || end === -1 || end < start) {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) {
-    return null;
-  }
-  const groups: RawGroup[] = [];
-  for (const item of parsed) {
-    if (item === null || typeof item !== "object") {
+  let candidates = 0;
+  for (let start = text.indexOf("["); start !== -1; start = text.indexOf("[", start + 1)) {
+    if (++candidates > MAX_ARRAY_CANDIDATES) {
+      break;
+    }
+    const end = balancedArrayEnd(text, start);
+    if (end === -1) {
       continue;
     }
-    const obj = item as Record<string, unknown>;
-    const slug = obj["slug"];
-    const members = obj["members"];
-    if (typeof slug !== "string" || !Array.isArray(members)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text.slice(start, end + 1));
+    } catch {
       continue;
     }
-    const valid = members.filter((m): m is string => typeof m === "string" && validDirs.has(m));
-    if (valid.length > 0) {
-      groups.push({ slug, members: valid });
+    if (!Array.isArray(parsed)) {
+      continue;
+    }
+    const groups: RawGroup[] = [];
+    for (const item of parsed) {
+      const r = v.safeParse(RawGroupSchema, item);
+      if (!r.success) {
+        continue;
+      }
+      const members = r.output.members.filter((m) => validDirs.has(m));
+      if (members.length > 0) {
+        groups.push({ slug: r.output.slug, members });
+      }
+    }
+    if (groups.length > 0) {
+      return groups;
     }
   }
-  return groups.length > 0 ? groups : null;
+  return null;
+}
+
+/** Index of the ']' closing the '[' at `start`, skipping string literals; -1 if unbalanced. */
+function balancedArrayEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "[" || ch === "{") {
+      depth++;
+    } else if (ch === "]" || ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return ch === "]" ? i : -1;
+      }
+      if (depth < 0) {
+        return -1;
+      }
+    }
+  }
+  return -1;
 }
 
 /** Validate a value (e.g. a disk-cache file) as a RawGroup[], rejecting wrong shapes. */
 export function validateRawGroups(parsed: unknown): RawGroup[] | null {
-  if (!Array.isArray(parsed)) {
-    return null;
-  }
-  const out: RawGroup[] = [];
-  for (const item of parsed) {
-    if (item === null || typeof item !== "object") {
-      return null;
-    }
-    const obj = item as Record<string, unknown>;
-    const slug = obj["slug"];
-    const members = obj["members"];
-    if (typeof slug !== "string" || !Array.isArray(members)) {
-      return null;
-    }
-    out.push({ slug, members: members.filter((m): m is string => typeof m === "string") });
-  }
-  return out;
+  const r = v.safeParse(RawGroupsSchema, parsed);
+  return r.success ? r.output : null;
 }
 
 /**
@@ -132,9 +158,36 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
   const cacheDirFn = deps.cacheDir ?? defaultCacheDir;
 
   if (opts.cmd !== undefined) {
+    const cmd = opts.cmd;
+    const [shell, shellFlag] = process.platform === "win32" ? ["cmd", "/c"] : ["sh", "-c"];
+    // Trust/provenance: an env-sourced command is shell-executed; announce it once, on
+    // first actual run (not at construction), so a committed-marker win — which never
+    // invokes the grouper — never triggers it. Cache hits also skip it: the command
+    // genuinely did not run.
+    let noticeShown = false;
+    const onRun =
+      opts.cmdFromEnv
+        ? (): void => {
+            if (!noticeShown) {
+              noticeShown = true;
+              console.error(`ccpluginizer: running LLM grouper from CCPLUGINIZER_LLM_CMD: ${cmd}`);
+            }
+          }
+        : undefined;
     return {
-      fn: makeSubprocessGrouper({ cmd: opts.cmd, fromEnv: opts.cmdFromEnv, timeoutMs: opts.timeoutMs }, { run, cacheDir: cacheDirFn }),
-      backendId: opts.cmd,
+      fn: makeCachedGrouper(
+        cmd,
+        cacheDirFn,
+        (prompt) =>
+          run(shell, [shellFlag, cmd], {
+            encoding: "utf8",
+            input: prompt,
+            maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
+            timeout: opts.timeoutMs,
+          }),
+        onRun,
+      ),
+      backendId: cmd,
       kind: "subprocess",
     };
   }
@@ -142,7 +195,17 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
   const claude = whichFn("claude");
   if (claude !== null) {
     return {
-      fn: claudeGrouper(claude, opts.timeoutMs, { run, cacheDir: cacheDirFn }),
+      // The prompt goes on stdin, not argv: one line per skill at hundreds of skills
+      // exceeds the OS per-argument limit (E2BIG), which would silently disable the
+      // claude backend on exactly the repos that most need the rescue.
+      fn: makeCachedGrouper("claude", cacheDirFn, (prompt) =>
+        run(claude, ["-p"], {
+          encoding: "utf8",
+          input: prompt,
+          maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
+          timeout: opts.timeoutMs,
+        }),
+      ),
       backendId: "claude",
       kind: "claude",
     };
@@ -151,67 +214,31 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
   return null;
 }
 
-interface BackendDeps {
-  readonly run: SpawnRun;
-  readonly cacheDir: () => string;
-}
-
-function makeSubprocessGrouper(
-  opts: { cmd: string; fromEnv: boolean; timeoutMs: number },
-  deps: BackendDeps,
+/** The shared backend pipeline: cache read → invoke → parse → gate-checked cache write. */
+function makeCachedGrouper(
+  cacheId: string,
+  cacheDir: () => string,
+  invoke: (prompt: string) => ReturnType<SpawnRun>,
+  onRun?: () => void,
 ): GroupSkillsFn {
-  let noticeShown = false;
-  const [shell, shellFlag] = process.platform === "win32" ? ["cmd", "/c"] : ["sh", "-c"];
   return (skills: readonly SkillMeta[]): Promise<RawGroup[]> => {
-    const validDirs = new Set(skills.map((s) => s.dir));
-    const cacheKey = hashSkills(skills, opts.cmd);
-    const cached = readCache(deps.cacheDir, cacheKey);
+    const cacheKey = hashSkills(skills, cacheId);
+    const cached = readCache(cacheDir, cacheKey);
     if (cached !== null) {
       return Promise.resolve(cached);
     }
-    // Trust/provenance: an env-sourced command is shell-executed; announce it once, here
-    // (not at construction), so a committed-marker win — which never invokes the grouper —
-    // never triggers it. Cache hits also skip it: the command genuinely did not run.
-    if (opts.fromEnv && !noticeShown) {
-      noticeShown = true;
-      console.error(`ccpluginizer: running LLM grouper from CCPLUGINIZER_LLM_CMD: ${opts.cmd}`);
-    }
-    const result = deps.run(shell, [shellFlag, opts.cmd], {
-      encoding: "utf8",
-      input: buildClusterPrompt(skills),
-      maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
-      timeout: opts.timeoutMs,
-    });
+    onRun?.();
+    const result = invoke(buildClusterPrompt(skills));
     if (isSpawnFailure(result)) {
       return Promise.resolve([]);
     }
-    const groups = parseClusterResponse(String(result.stdout), validDirs) ?? [];
-    if (groups.length > 0) {
-      writeCache(deps.cacheDir, cacheKey, groups);
-    }
-    return Promise.resolve(groups);
-  };
-}
-
-function claudeGrouper(claudePath: string, timeoutMs: number, deps: BackendDeps): GroupSkillsFn {
-  return (skills: readonly SkillMeta[]): Promise<RawGroup[]> => {
     const validDirs = new Set(skills.map((s) => s.dir));
-    const cacheKey = hashSkills(skills, "claude");
-    const cached = readCache(deps.cacheDir, cacheKey);
-    if (cached !== null) {
-      return Promise.resolve(cached);
-    }
-    const result = deps.run(claudePath, ["-p", buildClusterPrompt(skills)], {
-      encoding: "utf8",
-      maxBuffer: CLUSTER_MAX_BUFFER_BYTES,
-      timeout: timeoutMs,
-    });
-    if (isSpawnFailure(result)) {
-      return Promise.resolve([]);
-    }
     const groups = parseClusterResponse(String(result.stdout), validDirs) ?? [];
-    if (groups.length > 0) {
-      writeCache(deps.cacheDir, cacheKey, groups);
+    // Only cache gate-passing groupings: a parseable-but-rejected response (e.g. one
+    // giant group) replayed from cache would permanently disable the stochastic LLM
+    // rescue for this skill set, while parse failures deliberately retry.
+    if (groups.length > 0 && rawGroupsAcceptable(skills, groups)) {
+      writeCache(cacheDir, cacheKey, groups);
     }
     return Promise.resolve(groups);
   };
@@ -242,11 +269,13 @@ function which(cmd: string): string | null {
 }
 
 function hashSkills(skills: readonly SkillMeta[], backendId: string): string {
-  const material = [...skills]
-    .map((s) => `${s.dir}\x00${s.product ?? ""}\x00${s.description}`)
-    .sort()
-    .join("\n");
-  return createHash("sha256").update(backendId).update("\x00").update(material).digest("hex").slice(0, 32);
+  // JSON framing keeps entry boundaries unambiguous: "\n"-joining raw fields would
+  // let distinct skill sets collide once a description itself contains newlines.
+  const material = JSON.stringify([
+    backendId,
+    [...skills].map((s) => [s.dir, s.product ?? "", s.description]).sort(),
+  ]);
+  return createHash("sha256").update(material).digest("hex").slice(0, 32);
 }
 
 function defaultCacheDir(): string {

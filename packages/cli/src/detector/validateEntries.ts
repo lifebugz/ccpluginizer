@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { MarketplaceEntrySchema } from "../schemas/marketplaceEntry.ts";
+import { readJsonFile } from "./fsWalk.ts";
 
 export interface ValidationResult {
   readonly ok: boolean;
@@ -20,7 +21,14 @@ export function validateEntries(items: readonly unknown[]): ValidationResult {
   items.forEach((item, i) => {
     const result = v.safeParse(MarketplaceEntrySchema, item);
     if (!result.success) {
-      const detail = result.issues.map((issue) => issue.message).join("; ");
+      // Prefix each message with its dot path — "skills.0: Invalid type" identifies
+      // the failing field, where the bare message alone would not.
+      const detail = result.issues
+        .map((issue) => {
+          const path = v.getDotPath(issue);
+          return path === null ? issue.message : `${path}: ${issue.message}`;
+        })
+        .join("; ");
       errors.push(`entry[${String(i)}]: ${detail}`);
     } else {
       names.push(result.output.name);
@@ -57,22 +65,12 @@ export function collectEntries(path: string): unknown[] {
     // Flatten array-shaped files the same way the single-file branch does, so a
     // multi-entry array dropped into the directory validates entry-by-entry rather
     // than being mis-parsed as one (non-conforming) array element.
-    return files.flatMap((f) => toEntryList(parseJsonFile(join(path, f))));
+    return files.flatMap((f) => toEntryList(readJsonFile(join(path, f))));
   }
-  return toEntryList(parseJsonFile(path));
+  return toEntryList(readJsonFile(path));
 }
 
 /** A parsed JSON file is either a single entry or an array of entries. */
 function toEntryList(parsed: unknown): unknown[] {
   return Array.isArray(parsed) ? parsed : [parsed];
-}
-
-function parseJsonFile(file: string): unknown {
-  try {
-    return JSON.parse(readFileSync(file, "utf8"));
-  } catch (e) {
-    throw new Error(`Invalid JSON in ${file}: ${e instanceof Error ? e.message : String(e)}`, {
-      cause: e,
-    });
-  }
 }

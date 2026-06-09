@@ -143,6 +143,47 @@ describe("parseYamlFrontmatter: block scalars", () => {
   });
 });
 
+describe("parseYamlFrontmatter: depth and edge cases", () => {
+  test("a grandchild map is skipped, not flattened over a real sibling key", () => {
+    const body = [
+      "metadata:",
+      "  product: voice",
+      "  internal:",
+      "    product: legacy",
+    ].join("\n");
+    const meta = parseYamlFrontmatter(body)["metadata"] as Record<string, unknown>;
+    expect(meta["product"]).toBe("voice");
+    expect(meta["internal"]).toBeNull();
+  });
+
+  test("a nested list item deeper than the first is skipped, not flattened", () => {
+    const body = ["tags:", "  - a", "    - nested", "  - b"].join("\n");
+    expect(parseYamlFrontmatter(body)["tags"]).toEqual(["a", "b"]);
+  });
+
+  test("folds a plain scalar that starts on the following line (no indicator)", () => {
+    const body = ["description:", "  Send SMS via the Telnyx API", "name: foo"].join("\n");
+    const out = parseYamlFrontmatter(body);
+    expect(out["description"]).toBe("Send SMS via the Telnyx API");
+    expect(out["name"]).toBe("foo");
+  });
+
+  test("a bare `key:` with no content yields an empty string (matches the v0.1.1 parser)", () => {
+    const out = parseYamlFrontmatter("description:\nname: foo\n");
+    expect(out["description"]).toBe("");
+    expect(out["name"]).toBe("foo");
+  });
+
+  test("__proto__ becomes an ordinary own key, not a prototype swap", () => {
+    const body = ["__proto__:", "  description: smuggled", "name: x"].join("\n");
+    const out = parseYamlFrontmatter(body);
+    expect(out["name"]).toBe("x");
+    expect(out["description"]).toBeUndefined();
+    expect(Object.keys(out)).toContain("__proto__");
+    expect((out["__proto__"] as Record<string, unknown>)["description"]).toBe("smuggled");
+  });
+});
+
 describe("parseYamlFrontmatter: block lists", () => {
   test("parses a block list into an array", () => {
     const body = ["tags:", "  - messaging", "  - compliance", "category: messaging"].join("\n");

@@ -1,15 +1,13 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { checkMarketplaceGuard } from "./marketplaceGuard.ts";
 import { detectMarkerFile } from "./markerFile.ts";
 import { detectConventions } from "./conventions.ts";
 import { detectNonStandardManifest } from "./nonStandardManifest.ts";
 import { detectContentSniff } from "./contentSniff.ts";
 import { normalizePathsAgainstRepo } from "./normalize.ts";
-import { resolveSourceLayout, type SourceLayout } from "./sourceLayout.ts";
+import { createLayoutResolver, type ContainerRef, type SourceLayout } from "./sourceLayout.ts";
 import { enumerateSkills } from "./skillMeta.ts";
 import { partitionSkills, type ClusterStrategy, type GroupSkillsFn, type Grouping, type MarkerGroup, type ResolvedStrategy } from "./partition.ts";
-import { slugify } from "./slugify.ts";
+import { slugify, uniqueSlugs } from "./slugify.ts";
 import type { Finding, ComponentKind } from "./types.ts";
 import type { MarketplaceEntry, Source } from "../schemas/marketplaceEntry.ts";
 import type { MarkerFile } from "../schemas/markerFile.ts";
@@ -73,6 +71,7 @@ export async function synthesizeEntries(
   const minSkills = input.minSkillsToSplit ?? DEFAULT_MIN_SKILLS_TO_SPLIT;
   const marker = detectMarkerFile(input.repoRoot);
   let splitAttemptedButEmpty = false;
+  const fallthroughWarnings: string[] = [];
 
   // A committed marker WITHOUT groups is an explicit single-entry curation — honor
   // it rather than auto-splitting (the single-entry path applies marker.name/skills).
@@ -80,9 +79,12 @@ export async function synthesizeEntries(
     marker !== null && (marker.groups === undefined || marker.groups.length === 0);
 
   if (wantSplit && !markerSuppressesSplit) {
-    const layout = resolveSourceLayout(input.repoRoot);
-    if (layout.skillsContainer !== null) {
-      const skills = enumerateSkills(layout.skillsContainer.absDir);
+    // Two-phase layout: only the skills container is resolved up front; the rest
+    // (agents/mcp/hooks/pluginRoot/artifacts) resolves after the partition succeeds,
+    // so sub-threshold scans never pay for a repo-wide .md parse.
+    const resolver = createLayoutResolver(input.repoRoot);
+    if (resolver.skillsContainer !== null) {
+      const skills = enumerateSkills(resolver.skillsContainer.absDir, resolver.list);
       const markerGroups: readonly MarkerGroup[] | undefined = marker?.groups;
       const attempt = (markerGroups !== undefined && markerGroups.length > 0) || skills.length >= minSkills;
       if (attempt) {
@@ -92,9 +94,11 @@ export async function synthesizeEntries(
           ...(input.group !== undefined ? { group: input.group } : {}),
         });
         if (result !== null) {
-          const { entries, marker: markerDraft } = buildSplitEntries(
+          const layout = resolver.full();
+          const { entries, marker: markerDraft, agentsDropped } = buildSplitEntries(
             result.groups,
             layout,
+            resolver.skillsContainer,
             input.sourceRepo,
             {
               // Opt-in/additive: an explicit --umbrella OR a marker umbrella:true.
@@ -107,27 +111,43 @@ export async function synthesizeEntries(
             entries,
             split: { strategy: result.strategy, groupCount: result.groups.length },
             marker: markerDraft,
-            warnings: collectSplitWarnings(input.repoRoot, layout, input.sourceRepo, markerDraft.core, markerDraft.umbrella),
+            warnings: [
+              ...(result.warnings ?? []),
+              ...collectSplitWarnings(layout, input.sourceRepo, markerDraft.core, markerDraft.umbrella, agentsDropped),
+            ],
             splitAttemptedButEmpty: false,
           };
         }
         splitAttemptedButEmpty = true;
+        if (markerGroups !== undefined && markerGroups.length > 0) {
+          fallthroughWarnings.push(
+            'the committed .ccpluginizer.json "groups" matched no skill directory and no fallback partition was found; emitting a single entry — re-run scan --write-marker to refresh the frozen split.',
+          );
+        }
       }
     }
   }
 
-  // Fall through: a single entry, identical to today (this also runs the
-  // marketplace guard, preserving the abort for non-sliceable plugin repos).
-  return { entries: [synthesizeEntry(input)], split: null, marker: null, warnings: [], splitAttemptedButEmpty };
+  // Fall through: a single entry, identical to today. The guard runs here (not at
+  // the top) to preserve the abort for non-sliceable already-marketplace repos while
+  // still allowing a value-adding re-curation split above.
+  checkMarketplaceGuard(input.repoRoot);
+  return {
+    entries: [synthesizeEntryWithMarker(input, marker)],
+    split: null,
+    marker: null,
+    warnings: fallthroughWarnings,
+    splitAttemptedButEmpty,
+  };
 }
 
 /** Advisory warnings for an emitted split (artifacts the slices/core cannot carry). */
 function collectSplitWarnings(
-  repoRoot: string,
   layout: SourceLayout,
   sourceRepo: string,
   coreEmitted: boolean,
   umbrellaEmitted: boolean,
+  agentsDropped: boolean,
 ): string[] {
   const warnings: string[] = [];
 
@@ -143,37 +163,49 @@ function collectSplitWarnings(
     }
   }
 
-  // Agents ride along in the core entry; if core is disabled and there is no
-  // umbrella to carry them, they are dropped — warn, mirroring the MCP-drop case.
-  if (layout.agentsContainer !== null && !coreEmitted && !umbrellaEmitted) {
+  // Agents ride along in the core entry; they are dropped when core is absent, or
+  // when their container had to be refused as the core root (it would auto-load the
+  // full skills tree). Either way an umbrella still carries them.
+  if (layout.agentsContainer !== null && !umbrellaEmitted) {
+    if (agentsDropped) {
+      warnings.push(
+        `The agents in "${layout.agentsContainer.relPath}" are not carried by the core entry (rooting core at their container would auto-load the entire skills tree always-on); they will be dropped. Use --umbrella to retain them.`,
+      );
+    } else if (!coreEmitted) {
+      warnings.push(
+        `The agents in "${layout.agentsContainer.relPath}" are not carried by any emitted entry (core is disabled and no umbrella was emitted); they will be dropped. Use --umbrella, or a marker with "core": true, to retain them.`,
+      );
+    }
+  }
+
+  // Non-skill artifacts, uniformly enumerated by sourceLayout. The umbrella entry is
+  // a git-subdir at the plugin root, so it only carries artifacts under that root.
+  const umbrellaRoot = layout.pluginRoot?.relPath ?? ".";
+  const underUmbrella = (rel: string): boolean =>
+    umbrellaRoot === "." || rel === umbrellaRoot || rel.startsWith(`${umbrellaRoot}/`);
+  const artifactRefs = [
+    ...(layout.hooks !== null ? [{ kind: "hooks", relPath: layout.hooks.relPath }] : []),
+    ...layout.artifacts,
+  ];
+  const carriable = artifactRefs.filter((a) => underUmbrella(a.relPath));
+  const outside = artifactRefs.filter((a) => !underUmbrella(a.relPath));
+  if (!umbrellaEmitted && carriable.length > 0) {
     warnings.push(
-      `The agents in "${layout.agentsContainer.relPath}" are not carried by any emitted entry (core is disabled and no umbrella was emitted); they will be dropped. Use --umbrella, or a marker with "core": true, to retain them.`,
+      `Split entries do not carry these non-skill artifacts: ${carriable.map((a) => a.kind).join(", ")}. Use --umbrella to retain them, or --no-split for a single entry.`,
+    );
+  }
+  if (outside.length > 0) {
+    warnings.push(
+      `These non-skill artifacts sit outside the plugin root, so no emitted entry (umbrella included) carries them: ${outside.map((a) => a.kind).join(", ")}. Use --no-split for a single entry.`,
     );
   }
 
-  // The umbrella entry is a git-subdir at the plugin root, so it carries every
-  // non-skill artifact beneath it — only warn about dropped artifacts when no
-  // umbrella was emitted (otherwise the "Use --umbrella to retain them" advice is
-  // self-contradictory, since the user already did).
-  if (!umbrellaEmitted) {
-    const pluginBase = layout.pluginRoot !== null ? join(repoRoot, layout.pluginRoot.relPath) : repoRoot;
-    const dropped: string[] = [];
-    if (layout.hooks !== null) {
-      dropped.push("hooks");
-    }
-    for (const dir of ["commands", "output-styles", "themes"]) {
-      if (existsSync(join(pluginBase, dir))) {
-        dropped.push(dir);
-      }
-    }
-    if (existsSync(join(pluginBase, "monitors", "monitors.json")) || existsSync(join(pluginBase, "monitors.json"))) {
-      dropped.push("monitors");
-    }
-    if (dropped.length > 0) {
-      warnings.push(
-        `Split entries do not carry these non-skill artifacts: ${dropped.join(", ")}. Use --umbrella to retain them, or --no-split for a single entry.`,
-      );
-    }
+  // Skills living outside the chosen container are invisible to every slice.
+  if (layout.skillDirsOutsideContainer > 0 && layout.skillsContainer !== null) {
+    const n = layout.skillDirsOutsideContainer;
+    warnings.push(
+      `${String(n)} skill ${n === 1 ? "directory" : "directories"} outside "${layout.skillsContainer.relPath}" ${n === 1 ? "is" : "are"} not covered by the split; use --no-split for a single entry that detects the whole repo.`,
+    );
   }
 
   if (sourceRepo.startsWith("local/")) {
@@ -187,12 +219,47 @@ function collectSplitWarnings(
 
 export function synthesizeEntry(input: SynthesizeInput): MarketplaceEntry {
   checkMarketplaceGuard(input.repoRoot);
+  return synthesizeEntryWithMarker(input, detectMarkerFile(input.repoRoot));
+}
 
-  const marker = detectMarkerFile(input.repoRoot);
+/** Internal variant taking the already-parsed marker, so a scan parses it once. */
+function synthesizeEntryWithMarker(input: SynthesizeInput, marker: MarkerFile | null): MarketplaceEntry {
   if (marker !== null) {
+    // A freeze-only marker (groups, no component fields) curates the SPLIT, not the
+    // single entry: under --no-split or an interactive decline it must not shortcut
+    // detection — that would emit a bare {name, source} entry and silently drop every
+    // skill. Run detection and overlay the marker's identity metadata instead.
+    if (isFreezeOnlyMarker(marker)) {
+      return {
+        ...synthesizeEntryFromDetection(input),
+        name: marker.name,
+        ...(marker.description !== undefined ? { description: marker.description } : {}),
+        ...(marker.license !== undefined ? { license: marker.license } : {}),
+        ...(marker.homepage !== undefined ? { homepage: marker.homepage } : {}),
+        ...(marker.repository !== undefined ? { repository: marker.repository } : {}),
+      };
+    }
     return buildEntryFromMarker(marker, input.sourceRepo, input.repoRoot);
   }
+  return synthesizeEntryFromDetection(input);
+}
 
+function isFreezeOnlyMarker(marker: MarkerFile): boolean {
+  return (
+    marker.groups !== undefined &&
+    marker.groups.length > 0 &&
+    marker.skills === undefined &&
+    marker.agents === undefined &&
+    marker.commands === undefined &&
+    marker.hooks === undefined &&
+    marker.mcpServers === undefined &&
+    marker.outputStyles === undefined &&
+    marker.themes === undefined &&
+    marker.monitors === undefined
+  );
+}
+
+function synthesizeEntryFromDetection(input: SynthesizeInput): MarketplaceEntry {
   const conventionFindings = detectConventions(input.repoRoot);
   const manifestResult = detectNonStandardManifest(input.repoRoot);
   const sniffFindings = detectContentSniff(input.repoRoot);
@@ -373,58 +440,56 @@ interface SplitOptions {
 function buildSplitEntries(
   groups: Grouping,
   layout: SourceLayout,
+  skillsContainer: ContainerRef,
   sourceRepo: string,
   options: SplitOptions,
-): { entries: MarketplaceEntry[]; marker: MarkerDraft } {
+): { entries: MarketplaceEntry[]; marker: MarkerDraft; agentsDropped: boolean } {
   const base = slugify(options.markerName ?? defaultEntryName(sourceRepo));
-  const skillsContainer = layout.skillsContainer;
-  if (skillsContainer === null) {
-    return {
-      entries: [synthesizeEntryFromLayoutless(sourceRepo)],
-      marker: { name: base, core: false, umbrella: false, groups: [] },
-    };
-  }
-
-  const used = new Set<string>();
   const entries: MarketplaceEntry[] = [];
 
   // Umbrella first so it reserves the bare base name.
   if (options.umbrella) {
     const umbrellaPath = layout.pluginRoot?.relPath ?? ".";
-    used.add(base);
     entries.push({
       name: base,
       source: makeGitSubdirSource(sourceRepo, umbrellaPath),
-      strict: true,
+      // strict requires .claude-plugin/plugin.json at the source root; a plugin-less
+      // flat repo (pluginRoot null → rooted at ".") must stay installable.
+      strict: layout.pluginRoot !== null,
     });
   }
 
   // Core: inline MCP + enumerated agents, rooted at a skills-free container.
-  const core = options.emitCore ? buildCoreEntry(`${base}-core`, layout, sourceRepo) : null;
-  if (core !== null) {
-    used.add(core.name);
-    entries.push(core);
+  const core = options.emitCore
+    ? buildCoreEntry(`${base}-core`, layout, skillsContainer, sourceRepo)
+    : { entry: null, agentsDropped: false };
+  if (core.entry !== null) {
+    entries.push(core.entry);
   }
 
-  // One slice per group, each a git-subdir at the skills container.
+  // Slug-first naming: disambiguate slugs against the reserved core slug, then derive
+  // names from slugs — never slugs back out of formatted names. Keeps the frozen
+  // marker decoupled from the `${base}-${slug}` name template.
+  const reservedSlugs = core.entry !== null ? ["core"] : [];
+  const slugs = uniqueSlugs([...reservedSlugs, ...groups.map((g) => g.slug)]).slice(reservedSlugs.length);
   const markerGroups: { slug: string; skills: string[] }[] = [];
-  for (const group of groups) {
-    const name = uniqueName(used, `${base}-${group.slug}`);
-    used.add(name);
+  groups.forEach((group, i) => {
+    const slug = slugs[i] ?? group.slug;
     const skills = group.skills.map((s) => s.path);
-    markerGroups.push({ slug: name.slice(base.length + 1), skills });
+    markerGroups.push({ slug, skills });
     entries.push({
-      name,
+      name: `${base}-${slug}`,
       source: makeGitSubdirSource(sourceRepo, skillsContainer.relPath),
       strict: false,
       skills,
-      ...(core !== null ? { dependencies: [core.name] } : {}),
+      ...(core.entry !== null ? { dependencies: [core.entry.name] } : {}),
     });
-  }
+  });
 
   return {
     entries,
-    marker: { name: base, core: core !== null, umbrella: options.umbrella, groups: markerGroups },
+    marker: { name: base, core: core.entry !== null, umbrella: options.umbrella, groups: markerGroups },
+    agentsDropped: core.agentsDropped,
   };
 }
 
@@ -432,41 +497,38 @@ function buildSplitEntries(
 function buildCoreEntry(
   name: string,
   layout: SourceLayout,
+  skillsContainer: ContainerRef,
   sourceRepo: string,
-): MarketplaceEntry | null {
+): { entry: MarketplaceEntry | null; agentsDropped: boolean } {
   const agents = layout.agentsContainer;
   const mcp = layout.mcp;
   if (agents === null && mcp === null) {
-    return null; // nothing to share
+    return { entry: null, agentsDropped: false }; // nothing to share
   }
-  // Root at the agents container when present (no plugin.json, no skills/);
-  // otherwise the skills container, which has no `skills/` subdir to auto-load.
-  const rootPath = agents?.relPath ?? layout.skillsContainer?.relPath ?? ".";
+  // Refuse an agents root whose direct `skills/` child IS the skills container:
+  // Claude Code auto-discovers `<root>/skills`, so such a core would load every
+  // skill always-on and defeat the split.
+  const agentsRootEnclosesSkills =
+    agents !== null && skillsContainer.relPath === joinRel(agents.relPath, "skills");
+  const carriesAgents = agents !== null && !agentsRootEnclosesSkills;
+  // Root at the agents container when safe (no plugin.json, no skills/); otherwise
+  // the skills container, which has no `skills/` subdir to auto-load.
+  const rootPath = carriesAgents ? agents.relPath : skillsContainer.relPath;
+  if (!carriesAgents && mcp === null) {
+    return { entry: null, agentsDropped: agents !== null };
+  }
   return {
-    name,
-    source: makeGitSubdirSource(sourceRepo, rootPath),
-    strict: false,
-    ...(agents !== null ? { agents: agents.files.map((f) => `./${f}`) } : {}),
-    ...(mcp !== null ? { mcpServers: mcp.servers } : {}),
+    entry: {
+      name,
+      source: makeGitSubdirSource(sourceRepo, rootPath),
+      strict: false,
+      ...(carriesAgents ? { agents: agents.files.map((f) => `./${f}`) } : {}),
+      ...(mcp !== null ? { mcpServers: mcp.servers } : {}),
+    },
+    agentsDropped: agents !== null && !carriesAgents,
   };
 }
 
-function uniqueName(used: ReadonlySet<string>, desired: string): string {
-  if (!used.has(desired)) {
-    return desired;
-  }
-  let n = 2;
-  while (used.has(`${desired}-${String(n)}`)) {
-    n++;
-  }
-  return `${desired}-${String(n)}`;
-}
-
-/** Fallback used only if a split was requested without a resolvable skills container. */
-function synthesizeEntryFromLayoutless(sourceRepo: string): MarketplaceEntry {
-  return {
-    name: defaultEntryName(sourceRepo),
-    source: makeGithubSource(sourceRepo),
-    strict: false,
-  };
+function joinRel(base: string, child: string): string {
+  return base === "." ? child : `${base}/${child}`;
 }
