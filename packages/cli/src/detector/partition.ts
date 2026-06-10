@@ -43,6 +43,7 @@ export type GroupSkillsFn = (skills: readonly SkillMeta[]) => Promise<GrouperRun
 /** How the LLM step failed, when it ran and lost. */
 export type LlmFailure =
   | { readonly step: "no-backend" }
+  | { readonly step: "errored" }
   | { readonly step: "no-output"; readonly backend: BackendKind }
   | { readonly step: "gate-rejected"; readonly backend: BackendKind };
 
@@ -51,6 +52,7 @@ export type LlmFailure =
  * notices pattern-match reported facts instead of re-deriving them from field pairs.
  */
 export type SplitProvenance =
+  | { readonly kind: "skipped" }
   | { readonly kind: "marker" }
   | { readonly kind: "llm"; readonly backend: BackendKind }
   | { readonly kind: "deterministic"; readonly strategy: DeterministicStrategy; readonly llmFailure?: LlmFailure }
@@ -74,8 +76,12 @@ export interface PartitionOptions {
   readonly strategy?: ClusterStrategy;
   readonly markerGroups?: readonly MarkerGroup[];
   readonly group?: GroupSkillsFn;
-  /** Skip the LLM step entirely (used when only a marker-driven result could be honored). */
-  readonly suppressLlm?: boolean;
+  /**
+   * Only a marker-driven grouping may be honored (the caller's threshold was not
+   * met on its own): a voided marker returns no result instead of cascading, and
+   * the LLM step is never consulted.
+   */
+  readonly markerMandatory?: boolean;
 }
 
 // Acceptance gate constants.
@@ -113,13 +119,20 @@ export function partitionByDirectory(skills: readonly SkillMeta[]): Grouping | n
   return normalizeAndGate(groupByKey(skills, keyOf), skills.length);
 }
 
+// Memoized per skills array: the cascade runs directory and name-prefix back to
+// back over the same array, and the prefix-strip is identical for both.
+const strippedCache = new WeakMap<readonly SkillMeta[], string[]>();
+
 /** Build a `dir -> key` resolver after stripping the global common prefix from dir names. */
 function strippedKeyResolver(
   skills: readonly SkillMeta[],
   keyFromStripped: (stripped: string) => string,
 ): (s: SkillMeta) => string {
-  const dirs = skills.map((s) => s.dir);
-  const stripped = stripCommonPrefix(dirs);
+  let stripped = strippedCache.get(skills);
+  if (stripped === undefined) {
+    stripped = stripCommonPrefix(skills.map((s) => s.dir));
+    strippedCache.set(skills, stripped);
+  }
   const keyByDir = new Map<string, string>();
   skills.forEach((s, i) => {
     const name = stripped[i] ?? s.dir;
@@ -160,6 +173,15 @@ function groupByKey(
   return m;
 }
 
+/** The shared gate bounds: K within [MIN_K, MAX_K] and no group above the size cap. */
+function passesGateBounds(groups: readonly { skills: readonly SkillMeta[] }[], total: number): boolean {
+  return (
+    groups.length >= MIN_K &&
+    groups.length <= MAX_K &&
+    !groups.some((g) => g.skills.length > MAX_FRACTION * total)
+  );
+}
+
 function normalizeAndGate(rawByKey: Map<string, SkillMeta[]>, total: number): Grouping | null {
   let groups: KeyedBucket[] = [...rawByKey].map(([key, skills]) => ({ key, skills }));
   if (groups.length === 0) {
@@ -167,10 +189,7 @@ function normalizeAndGate(rawByKey: Map<string, SkillMeta[]>, total: number): Gr
   }
   groups = collapseToFit(groups, MAX_K);
   groups = coalesceTiny(groups, MIN_GROUP_SIZE);
-  if (groups.length < MIN_K || groups.length > MAX_K) {
-    return null;
-  }
-  if (groups.some((g) => g.skills.length > MAX_FRACTION * total)) {
+  if (!passesGateBounds(groups, total)) {
     return null;
   }
   return finalizeGroups(groups.map((g) => ({ slug: slugify(g.key), skills: g.skills })));
@@ -243,7 +262,7 @@ function finalizeGroups(groups: readonly { slug: string; skills: SkillMeta[] }[]
 // ---------------------------------------------------------------------------
 
 function acceptRawGroups(groups: readonly SkillGroup[], total: number): Grouping | null {
-  if (groups.length < MIN_K || groups.length > MAX_K) {
+  if (!passesGateBounds(groups, total)) {
     return null;
   }
   const covered = groups.flatMap((g) => g.skills.map((s) => s.dir));
@@ -252,9 +271,6 @@ function acceptRawGroups(groups: readonly SkillGroup[], total: number): Grouping
   }
   if (covered.length !== total) {
     return null; // not total cover
-  }
-  if (groups.some((g) => g.skills.length > MAX_FRACTION * total)) {
-    return null;
   }
   return finalizeGroups(groups);
 }
@@ -342,6 +358,11 @@ function matchMarkerGroups(
   return { groups: out, unmatched, duplicates, fuzzyMatched, leftover: skills.filter((s) => !assigned.has(s.dir)) };
 }
 
+/** First three items, with an ellipsis when more were elided. */
+function preview(items: readonly string[]): string {
+  return items.slice(0, 3).join(", ") + (items.length > 3 ? ", …" : "");
+}
+
 function normalizePath(p: string): string {
   return p.endsWith("/") ? p : `${p}/`;
 }
@@ -400,27 +421,28 @@ export async function partitionSkills(
     if (matched.length === 0) {
       // Fully stale marker: honoring it would emit a single bogus "misc" slice
       // announced as "via committed marker" — ignore it and fall through to the
-      // requested strategy instead.
+      // requested strategy instead. When only the marker could have been honored
+      // (caller below its threshold), stop here: no cascade, no LLM.
       warnings.push(
         `no path in .ccpluginizer.json "groups" matched a skill directory (expected paths like "./<skill-dir>/"); ignoring the frozen split — re-run scan --write-marker to refresh it.`,
       );
+      if (options.markerMandatory === true) {
+        return { groups: null, provenance: { kind: "none" }, warnings };
+      }
     } else {
       if (unmatched.length > 0) {
-        const preview = unmatched.slice(0, 3).join(", ") + (unmatched.length > 3 ? ", …" : "");
         warnings.push(
-          `${String(unmatched.length)} path(s) in .ccpluginizer.json "groups" match no skill directory (${preview}); re-run scan --write-marker to refresh the frozen split.`,
+          `${String(unmatched.length)} path(s) in .ccpluginizer.json "groups" match no skill directory (${preview(unmatched)}); re-run scan --write-marker to refresh the frozen split.`,
         );
       }
       if (fuzzyMatched.length > 0) {
-        const preview = fuzzyMatched.slice(0, 3).join(", ") + (fuzzyMatched.length > 3 ? ", …" : "");
         warnings.push(
-          `${String(fuzzyMatched.length)} path(s) in .ccpluginizer.json "groups" matched a skill by directory name only (${preview}); update the marker paths or re-run scan --write-marker.`,
+          `${String(fuzzyMatched.length)} path(s) in .ccpluginizer.json "groups" matched a skill by directory name only (${preview(fuzzyMatched)}); update the marker paths or re-run scan --write-marker.`,
         );
       }
       if (duplicates.length > 0) {
-        const preview = duplicates.slice(0, 3).join(", ") + (duplicates.length > 3 ? ", …" : "");
         warnings.push(
-          `${String(duplicates.length)} path(s) in .ccpluginizer.json "groups" appear in more than one group; the first occurrence wins (${preview}) — fix the marker or re-run scan --write-marker.`,
+          `${String(duplicates.length)} path(s) in .ccpluginizer.json "groups" appear in more than one group; the first occurrence wins (${preview(duplicates)}) — fix the marker or re-run scan --write-marker.`,
         );
       }
       let groups = matched;
@@ -435,14 +457,19 @@ export async function partitionSkills(
   }
 
   const runLlm = async (): Promise<{ backend: BackendKind; groups: Grouping } | null> => {
-    if (options.suppressLlm === true) {
-      return null; // deliberately not invoked — no failure to report
-    }
     if (options.group === undefined) {
       llmFailure = { step: "no-backend" };
       return null;
     }
-    const run = await options.group(skills);
+    let run;
+    try {
+      run = await options.group(skills);
+    } catch {
+      // A rejecting BYO grouper must cascade to the deterministic fallback, not
+      // abort the scan — the seam accepts arbitrary functions.
+      llmFailure = { step: "errored" };
+      return null;
+    }
     if (run === null) {
       llmFailure = { step: "no-backend" };
       return null;

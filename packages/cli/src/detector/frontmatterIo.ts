@@ -4,14 +4,9 @@
 
 import { readFileSync } from "node:fs";
 import * as v from "valibot";
-import { AgentFrontmatterSchema, SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
+import { AgentFrontmatterSchema, SkillFrontmatterSchema, type SkillFrontmatter } from "../schemas/frontmatter.ts";
 import { extractFrontmatter } from "./yaml.ts";
-import type { SkipReporter } from "./fsWalk.ts";
-
-function isPermissionError(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null)?.code;
-  return code === "EACCES" || code === "EPERM";
-}
+import { isPermissionError, type SkipReporter } from "./fsWalk.ts";
 
 /**
  * Read a file and extract its YAML frontmatter; null when unreadable or fence-less.
@@ -51,8 +46,17 @@ export function isAgentFile(filePath: string, readFm: FrontmatterReader = readFr
   return fm !== null && v.safeParse(AgentFrontmatterSchema, fm).success;
 }
 
-/** Single authority for "is this a valid SKILL.md": frontmatter parses as a skill. */
-export function isSkillFile(filePath: string, readFm: FrontmatterReader = readFrontmatter): boolean {
+/** Single authority for SKILL.md validity: the parsed frontmatter, or null. */
+export function parseSkillFile(filePath: string, readFm: FrontmatterReader = readFrontmatter): SkillFrontmatter | null {
   const fm = readFm(filePath);
-  return fm !== null && v.safeParse(SkillFrontmatterSchema, fm).success;
+  if (fm === null) {
+    return null;
+  }
+  const parsed = v.safeParse(SkillFrontmatterSchema, fm);
+  return parsed.success ? parsed.output : null;
+}
+
+/** Boolean form of parseSkillFile, for the sniffer. */
+export function isSkillFile(filePath: string, readFm: FrontmatterReader = readFrontmatter): boolean {
+  return parseSkillFile(filePath, readFm) !== null;
 }

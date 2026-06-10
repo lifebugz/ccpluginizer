@@ -8,6 +8,7 @@ import * as v from "valibot";
 import type { BackendKind, GrouperRun } from "../detector/partition.ts";
 import { RawGroupSchema, RawGroupsSchema, type RawGroup } from "../schemas/rawGroups.ts";
 import { readJsonFile } from "../detector/fsWalk.ts";
+import { byCodeUnit } from "../detector/slugify.ts";
 import type { SkillMeta } from "../detector/skillMeta.ts";
 
 /** Cap a backend's stdout so a runaway/garbage response cannot exhaust memory. */
@@ -40,6 +41,8 @@ export interface GrouperDeps {
   readonly run?: SpawnRun;
   readonly which?: (cmd: string) => string | null;
   readonly cacheDir?: () => string;
+  /** Renders the env-sourced-command trust disclosure (fires before the first real run). */
+  readonly onEnvCmdRun?: (cmd: string) => void;
 }
 
 export interface ResolveGrouperOpts {
@@ -211,7 +214,10 @@ function spawnGroupRun(
     // terminal close / process.exit would orphan a running backend — forward them.
     const forward = (sig: NodeJS.Signals) => (): void => {
       killTree(sig);
-      cleanupForwarders();
+      // Remove only the signal listeners; the 'exit' hook stays installed so the
+      // re-raise below escalates to a process-group SIGKILL at exit time even when
+      // the backend traps the forwarded signal.
+      cleanupSignalForwarders();
       process.kill(process.pid, sig);
     };
     const onSigint = forward("SIGINT");
@@ -220,10 +226,13 @@ function spawnGroupRun(
     const onExit = (): void => {
       killTree("SIGKILL");
     };
-    const cleanupForwarders = (): void => {
+    const cleanupSignalForwarders = (): void => {
       process.removeListener("SIGINT", onSigint);
       process.removeListener("SIGHUP", onSighup);
       process.removeListener("SIGTERM", onSigterm);
+    };
+    const cleanupForwarders = (): void => {
+      cleanupSignalForwarders();
       process.removeListener("exit", onExit);
     };
     process.once("SIGINT", onSigint);
@@ -242,7 +251,7 @@ function spawnGroupRun(
       // pipe) and release our end of the pipe. On POSIX a kill to a dead group is a
       // caught ESRCH no-op; on Windows the reap spawns taskkill, so a clean close
       // (no timeout/overflow/error) skips it instead of paying a subprocess per run.
-      if (!win || timedOut || overflowed || result.error !== undefined) {
+      if (!win || timedOut || overflowed || viaExitGrace || result.error !== undefined) {
         killTree("SIGKILL");
       }
       child.stdout?.destroy();
@@ -272,6 +281,7 @@ function spawnGroupRun(
         killTree("SIGKILL");
       }
     });
+    let viaExitGrace = false;
     const outcome = (status: number | null, signal: NodeJS.Signals | null): SpawnResult => ({
       ...(timedOut
         ? { error: new Error("ETIMEDOUT: LLM backend timed out") }
@@ -293,6 +303,9 @@ function spawnGroupRun(
     // give trailing output one second and then finish regardless.
     child.on("exit", (status, signal) => {
       schedule(() => {
+        // Reaching here means 'close' never fired: a grandchild survivor still
+        // holds the inherited stdout pipe — finish() must reap it even on Windows.
+        viaExitGrace = true;
         finish(outcome(status, signal));
       }, 1000);
     });
@@ -328,12 +341,17 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
     // invokes the grouper — never triggers it. Cache hits also skip it: the command
     // genuinely did not run.
     let noticeShown = false;
+    const renderEnvNotice =
+      deps.onEnvCmdRun ??
+      ((c: string): void => {
+        console.error(`ccpluginizer: running LLM grouper from CCPLUGINIZER_LLM_CMD: ${c}`);
+      });
     const onRun =
       opts.cmdFromEnv
         ? (): void => {
             if (!noticeShown) {
               noticeShown = true;
-              console.error(`ccpluginizer: running LLM grouper from CCPLUGINIZER_LLM_CMD: ${cmd}`);
+              renderEnvNotice(cmd);
             }
           }
         : undefined;
@@ -453,11 +471,12 @@ function which(cmd: string): string | null {
 }
 
 function hashSkills(skills: readonly SkillMeta[], backendId: string): string {
-  // JSON framing keeps entry boundaries unambiguous: "\n"-joining raw fields would
-  // let distinct skill sets collide once a description itself contains newlines.
+  // JSON framing keeps entry boundaries unambiguous, and serializing each tuple
+  // ONCE before sorting avoids the default comparator re-stringifying full
+  // descriptions on every comparison (and is canonical: no comma-join ties).
   const material = JSON.stringify([
     backendId,
-    [...skills].map((s) => [s.dir, s.product ?? "", s.description]).sort(),
+    skills.map((s) => JSON.stringify([s.dir, s.product ?? "", s.description])).sort(byCodeUnit),
   ]);
   return createHash("sha256").update(material).digest("hex").slice(0, 32);
 }

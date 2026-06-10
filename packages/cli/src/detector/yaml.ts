@@ -138,6 +138,7 @@ function collectBlockScalar(
 ): { value: string; next: number } {
   const folded = indicator.startsWith(">");
   const content: string[] = [];
+  let blockIndent = -1;
   let i = start;
   for (; i < lines.length; i++) {
     const line = lines[i] ?? "";
@@ -148,12 +149,34 @@ function collectBlockScalar(
     if (leadingSpaces(line) <= baseIndent) {
       break;
     }
-    content.push(line.trim());
+    if (blockIndent === -1) {
+      blockIndent = leadingSpaces(line); // the block's base indent, per YAML
+    }
+    // Strip only the block indent: deeper indentation inside a literal block
+    // (code samples) is content and must survive.
+    content.push(line.slice(Math.min(blockIndent, leadingSpaces(line))));
   }
   while (content.length > 0 && content[content.length - 1] === "") {
     content.pop();
   }
-  return { value: folded ? content.join(" ").trim() : content.join("\n"), next: i };
+  if (!folded) {
+    return { value: content.join("\n"), next: i };
+  }
+  // Folded (>): adjacent lines join with a space; a blank line is a paragraph
+  // break and folds to a newline — "para one.\n\npara two." must not become
+  // "para one.  para two.".
+  const paragraphs: string[] = [];
+  let current: string[] = [];
+  for (const line of content) {
+    if (line === "") {
+      paragraphs.push(current.join(" "));
+      current = [];
+    } else {
+      current.push(line.trim());
+    }
+  }
+  paragraphs.push(current.join(" "));
+  return { value: paragraphs.join("\n").trim(), next: i };
 }
 
 function collectNested(

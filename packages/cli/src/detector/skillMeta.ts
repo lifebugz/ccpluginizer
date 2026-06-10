@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import * as v from "valibot";
-import { SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
+import type * as v from "valibot";
+import type { SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
 import { dirContainsFile, makeDirLister, type DirLister } from "./fsWalk.ts";
-import { readFrontmatter, type FrontmatterReader } from "./frontmatterIo.ts";
+import { parseSkillFile, readFrontmatter, type FrontmatterReader } from "./frontmatterIo.ts";
 
 /** One skill's clustering-relevant metadata, plus its container-relative path. */
 export interface SkillMeta {
@@ -36,15 +36,11 @@ export function enumerateSkills(
     if (!dirContainsFile(list, skillPath, "SKILL.md")) {
       continue; // no SKILL.md (or a directory named SKILL.md) — not a skill
     }
-    const fm = readFm(join(skillPath, "SKILL.md"));
-    if (fm === null) {
-      continue; // unreadable or fence-less — skip rather than crash
+    const parsed = parseSkillFile(join(skillPath, "SKILL.md"), readFm);
+    if (parsed === null) {
+      continue; // unreadable, fence-less, or schema-invalid — skip rather than crash
     }
-    const parsed = v.safeParse(SkillFrontmatterSchema, fm);
-    if (!parsed.success) {
-      continue;
-    }
-    out.push(toMeta(dir, parsed.output));
+    out.push(toMeta(dir, parsed));
   }
   return out;
 }

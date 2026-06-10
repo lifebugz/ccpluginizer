@@ -6,7 +6,8 @@ import { readJsonFile } from "./fsWalk.ts";
 import type { MarkerFile } from "../schemas/markerFile.ts";
 import { MARKER_COMPONENT_FIELDS, MarkerFileSchema } from "../schemas/markerFile.ts";
 
-function hasComponentCuration(marker: MarkerFile): boolean {
+/** Does the marker carry any single-entry component curation? */
+export function hasComponentCuration(marker: MarkerFile): boolean {
   return MARKER_COMPONENT_FIELDS.some((key) => marker[key] !== undefined);
 }
 

@@ -212,3 +212,14 @@ describe("resolveSourceLayout: cross-parent symlink aliasing", () => {
     expect(resolver.skillDirsOutsideContainer).toBe(0);
   });
 });
+
+describe("resolveSourceLayout: anchor symmetry with the single-entry detector", () => {
+  test("a repo-root .mcp.json is found even when the plugin root is nested", () => {
+    const tmp = tempDir("ccp-rootmcp-");
+    const plugin = join(tmp, "plugin");
+    mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(tmp, ".mcp.json"), JSON.stringify({ mcpServers: { t: { type: "http", url: "https://x" } } }));
+    expect(resolveSourceLayout(tmp).mcp?.relPath).toBe(".mcp.json");
+  });
+});

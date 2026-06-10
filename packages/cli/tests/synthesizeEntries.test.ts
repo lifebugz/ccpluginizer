@@ -253,7 +253,7 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
       minSkillsToSplit: 2,
     });
     expect(res.split).toBeNull();
-    expect(res.attempted && res.split === null).toBe(true);
+    expect(res.provenance.kind).toBe("none");
   });
 
   test("false on a successful split", async () => {
@@ -265,7 +265,7 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
       minSkillsToSplit: 2,
     });
     expect(res.split).not.toBeNull();
-    expect(res.attempted && res.split === null).toBe(false);
+    expect(res.provenance.kind === "none").toBe(false);
   });
 
   test("false when sub-threshold (partitionSkills never called)", async () => {
@@ -274,7 +274,7 @@ describe("synthesizeEntries: splitAttemptedButEmpty flag", () => {
       sourceRepo: "test/skills-only",
     });
     expect(res.split).toBeNull();
-    expect(res.attempted && res.split === null).toBe(false);
+    expect(res.provenance.kind === "none").toBe(false);
   });
 });
 
@@ -423,5 +423,53 @@ describe("synthesizeEntries: fourth-wave regressions", () => {
     const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/flat", strategy: "metadata", minSkillsToSplit: 2 });
     expect(res.split?.coreEmitted).toBe(false);
     expect(res.marker?.core).toBe(true); // a later scan that gains agents/MCP emits one again
+  });
+});
+
+describe("synthesizeEntries: sixth-wave regressions", () => {
+  test("a vestigial nested plugin.json cannot produce an umbrella with zero skills", async () => {
+    const root = makeFlatSkillsRepo({ alpha: 4, beta: 4 }); // skills at repo-root skills/
+    mkdirSync(join(root, "providers", "claude", "plugin", ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      join(root, "providers", "claude", "plugin", ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "vestigial" }),
+    );
+    const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/vest", umbrella: true, strategy: "metadata", minSkillsToSplit: 2 });
+    const umbrella = res.entries.find((e) => e.name === "test-vest");
+    expect(umbrella).toBeDefined();
+    // The plugin root does not contain the skills: fall back to the explicit form.
+    expect(umbrella?.strict).toBe(false);
+    expect((umbrella?.skills ?? []).length).toBe(8);
+  });
+
+  test("template SKILL.md files inside a skill neither warn nor steal the container", async () => {
+    const root = makeFlatSkillsRepo({ alpha: 4, beta: 4 });
+    const templates = join(root, "skills", "alpha-0", "templates");
+    for (const n of ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9"]) {
+      mkdirSync(join(templates, n), { recursive: true });
+      writeFileSync(join(templates, n, "SKILL.md"), "---\ndescription: template.\n---\n");
+    }
+    const res = await synthesizeEntries({ repoRoot: root, sourceRepo: "test/tmpl", strategy: "metadata", minSkillsToSplit: 2 });
+    expect(res.split).not.toBeNull();
+    // 9 nested templates out-count the 8 real skills, but they live inside a skill.
+    expect(res.entries.some((e) => (e.source as { path?: string }).path === "skills")).toBe(true);
+    expect(res.warnings.some((w) => w.includes("outside"))).toBe(false);
+  });
+
+  test("a rejecting BYO grouper cascades to deterministic instead of aborting", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
+    const res = await synthesizeEntries({
+      repoRoot: root,
+      sourceRepo: "test/telnyx",
+      strategy: "llm",
+      minSkillsToSplit: 2,
+      group: () => Promise.reject(new Error("backend exploded")),
+    });
+    expect(res.split).not.toBeNull();
+    expect(res.provenance).toEqual({
+      kind: "deterministic",
+      strategy: "metadata",
+      llmFailure: { step: "errored" },
+    });
   });
 });

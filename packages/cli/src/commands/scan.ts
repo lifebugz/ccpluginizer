@@ -1,6 +1,6 @@
 import { Crust } from "@crustjs/core";
 import { confirm } from "@crustjs/prompts";
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveSource, inferSourceRepo, parseSourceInput } from "../sources/index.ts";
 import {
@@ -11,6 +11,8 @@ import {
   type SynthesizeEntriesResult,
 } from "../detector/synthesize.ts";
 import { readJsonFile } from "../detector/fsWalk.ts";
+import { markerSuppressesSplit } from "../detector/markerFile.ts";
+import { toEntryList } from "../detector/validateEntries.ts";
 import {
   CLUSTER_STRATEGIES,
   DEFAULT_STRATEGY,
@@ -60,13 +62,26 @@ export const scanCommand = new Crust("scan")
       output: trimOrUndefined(flags.output),
       outDir: trimOrUndefined(flags.outDir),
     };
-    if (
-      outputFlags.outDir !== undefined &&
-      existsSync(outputFlags.outDir) &&
-      !statSync(outputFlags.outDir).isDirectory()
-    ) {
-      // Fail before the scan, not with a raw ENOTDIR after all the work is done.
-      throw new Error(`--out-dir "${outputFlags.outDir}" exists and is not a directory`);
+    if (outputFlags.outDir !== undefined) {
+      // Fail before the scan, not with a raw ENOTDIR/EEXIST after all the work is
+      // done. lstat sees dangling symlinks that existsSync (which follows) misses.
+      let target = null;
+      try {
+        target = statSync(outputFlags.outDir);
+      } catch {
+        try {
+          lstatSync(outputFlags.outDir);
+          throw new Error(`--out-dir "${outputFlags.outDir}" is a dangling symlink`);
+        } catch (e) {
+          if (e instanceof Error && e.message.includes("dangling symlink")) {
+            throw e;
+          }
+          // plain ENOENT: the directory will be created
+        }
+      }
+      if (target !== null && !target.isDirectory()) {
+        throw new Error(`--out-dir "${outputFlags.outDir}" exists and is not a directory`);
+      }
     }
 
     const repoPath = await resolveSource(args.repo);
@@ -91,31 +106,48 @@ export const scanCommand = new Crust("scan")
     // `auto` (NOT auto-llm, which uses it as a rescue; NOT merely because `claude` is
     // on PATH). Only worth saying when this scan's split could actually have used it —
     // sub-threshold and marker-frozen runs never consult any strategy.
-    const splitCouldHaveUsedLlm = result.attempted && result.provenance.kind !== "marker";
+    const splitCouldHaveUsedLlm =
+      result.provenance.kind !== "skipped" && result.provenance.kind !== "marker";
     if (wantSplit && !strategyUsesLlm(requestedCluster) && llmConfig.cmd !== undefined && splitCouldHaveUsedLlm) {
       const source = llmConfig.cmdFromEnv ? "CCPLUGINIZER_LLM_CMD" : "--llm-cmd";
       console.error(
         `ccpluginizer: an LLM is configured (${source}) but --cluster=${requestedCluster} is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
       );
     }
+    // A split-suppressing marker silently outranks every strategy flag — say so when
+    // the user explicitly steered the clustering.
+    if (
+      wantSplit &&
+      result.existingMarker !== null &&
+      markerSuppressesSplit(result.existingMarker) &&
+      (requestedCluster !== DEFAULT_STRATEGY || llmConfig.cmd !== undefined)
+    ) {
+      console.error(
+        "ccpluginizer: the committed .ccpluginizer.json curates a single entry, so --cluster/--llm-cmd were not consulted; remove the marker (or give it \"groups\") to re-enable splitting.",
+      );
+    }
 
-    let warningsPrinted = false;
-    let reviewed: SynthesizeEntriesResult | null = null;
+    // One dedup set covers both print sites: pre-prompt warnings are never repeated
+    // after a decline (the re-synthesis re-reports e.g. permission skips by design).
+    const printedWarnings = new Set<string>();
+    const printWarnings = (warnings: readonly string[]): void => {
+      for (const warning of warnings) {
+        if (!printedWarnings.has(warning)) {
+          printedWarnings.add(warning);
+          console.error(`ccpluginizer: warning: ${warning}`);
+        }
+      }
+    };
     if (flags.interactive && result.split !== null) {
       // Surface the proposal's warnings before asking — a declined split otherwise
       // discards everything the original synthesis wanted the user to know.
-      for (const warning of result.warnings) {
-        console.error(`ccpluginizer: warning: ${warning}`);
-      }
-      warningsPrinted = true;
-      const next = await reviewSplit(result, { repoPath, sourceRepo });
-      reviewed = next !== result ? next : null;
-      result = next;
+      printWarnings(result.warnings);
+      result = await reviewSplit(result, { repoPath, sourceRepo });
     }
 
     if (result.split !== null) {
       printSplitNotice(result);
-    } else if (result.attempted && result.provenance.kind === "none") {
+    } else if (result.provenance.kind === "none") {
       // Explain every attempted-but-empty outcome the user explicitly steered:
       // an LLM step that ran and failed, or a forced (non-default) strategy.
       // The default `auto` stays silent by design.
@@ -124,11 +156,7 @@ export const scanCommand = new Crust("scan")
       }
     }
 
-    if (!warningsPrinted || reviewed !== null) {
-      for (const warning of result.warnings) {
-        console.error(`ccpluginizer: warning: ${warning}`);
-      }
-    }
+    printWarnings(result.warnings);
 
     if (flags.writeMarker) {
       if (result.marker === null) {
@@ -147,7 +175,7 @@ export const scanCommand = new Crust("scan")
       }
     }
 
-    emitOutput(result.entries, outputFlags, sourceRepo);
+    emitOutput(result.entries, outputFlags, sourceRepo, result.split !== null);
   });
 
 function normalizeStrategy(value: string): ClusterStrategy {
@@ -189,10 +217,12 @@ export function resolveLlmConfig(
   // Upper clamp: past 2^31-1 ms setTimeout overflows and fires at ~1ms, which would
   // SIGTERM the backend immediately on every run.
   const MAX_TIMEOUT_SECONDS = 2_147_483;
-  const safeSeconds =
-    Number.isFinite(resolvedSeconds) && resolvedSeconds > 0
-      ? Math.min(resolvedSeconds, MAX_TIMEOUT_SECONDS)
-      : DEFAULT_TIMEOUT_SECONDS;
+  const valid = Number.isFinite(resolvedSeconds) && resolvedSeconds > 0;
+  if (!valid && (flags.llmTimeout !== undefined || envTimeout !== undefined)) {
+    // Mirror --min-skills: an explicitly configured but unusable value is corrected loudly.
+    console.error(`ccpluginizer: invalid LLM timeout ${String(resolvedSeconds)}; using ${String(DEFAULT_TIMEOUT_SECONDS)}s.`);
+  }
+  const safeSeconds = valid ? Math.min(resolvedSeconds, MAX_TIMEOUT_SECONDS) : DEFAULT_TIMEOUT_SECONDS;
 
   return {
     ...(cmd !== undefined ? { cmd } : {}),
@@ -220,7 +250,7 @@ export function makeLazyGrouper(
 }
 
 /** Render the provenance clause for a notice or the review screen. */
-function describeProvenance(provenance: Exclude<SplitProvenance, { kind: "none" }>): string {
+function describeProvenance(provenance: Exclude<SplitProvenance, { kind: "none" } | { kind: "skipped" }>): string {
   if (provenance.kind === "marker") {
     return "via committed marker (.ccpluginizer.json)";
   }
@@ -238,13 +268,16 @@ function llmFailureReason(failure: LlmFailure): string {
     return "the LLM grouping was rejected by the acceptance gate";
   }
   if (failure.step === "no-output") {
-    return "the LLM backend was unreachable or produced no output";
+    return "the LLM backend was unreachable or produced no usable output";
+  }
+  if (failure.step === "errored") {
+    return "the LLM grouper threw an error";
   }
   return "no LLM backend found; set --llm-cmd or install the `claude` CLI";
 }
 
 export function printSplitNotice(result: SynthesizeEntriesResult): void {
-  if (result.split === null || result.provenance.kind === "none") {
+  if (result.split === null || result.provenance.kind === "none" || result.provenance.kind === "skipped") {
     return;
   }
   const slices = result.split.groupCount;
@@ -284,7 +317,7 @@ export async function reviewSplit(
   ctx: ReviewContext,
   confirmFn: ConfirmFn = (opts) => confirm(opts),
 ): Promise<SynthesizeEntriesResult> {
-  if (result.split === null || result.provenance.kind === "none") {
+  if (result.split === null || result.provenance.kind === "none" || result.provenance.kind === "skipped") {
     return result; // nothing to review — callers only invoke this on a fired split
   }
   console.error(`ccpluginizer: proposed split — ${describeProvenance(result.provenance)}`);
@@ -321,6 +354,7 @@ function emitOutput(
   entries: readonly MarketplaceEntry[],
   flags: OutputFlags,
   sourceRepo: string,
+  splitFired: boolean,
 ): void {
   if (flags.outDir !== undefined) {
     if (flags.output !== undefined) {
@@ -336,8 +370,10 @@ function emitOutput(
     console.error(`ccpluginizer: wrote ${String(entries.length)} entr${entries.length === 1 ? "y" : "ies"} to ${flags.outDir}`);
     return;
   }
-  // Single object when K=1 (byte-identical to pre-split output), JSON array when K>1.
-  const payload: unknown = entries.length === 1 ? entries[0] : entries;
+  // Single object only on the un-split path (byte-identical to pre-split output);
+  // a split — even a one-entry marker-frozen split — is always a JSON array, so
+  // consumers can tell the two contracts apart.
+  const payload: unknown = !splitFired && entries.length === 1 ? entries[0] : entries;
   const json = JSON.stringify(payload, null, 2);
   if (flags.output !== undefined) {
     writeFileSync(flags.output, json + "\n", "utf8");
@@ -382,8 +418,7 @@ function warnAboutStaleEntries(
 }
 
 function entryReferencesUrl(parsed: unknown, url: string): boolean {
-  const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
-  return items.some((item) => {
+  return toEntryList(parsed).some((item: unknown) => {
     if (item === null || typeof item !== "object") {
       return false;
     }

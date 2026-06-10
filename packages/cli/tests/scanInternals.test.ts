@@ -34,7 +34,6 @@ function splitResult(
     ],
     split: { groupCount: 1, coreEmitted: true, umbrellaEmitted: false },
     provenance,
-    attempted: true,
     marker: { name: "x", core: true, umbrella: false, groups: [{ slug: "a", skills: ["./a/"] }] },
     existingMarker: null,
     warnings: [],
@@ -102,7 +101,7 @@ describe("printSplitNotice taxonomy", () => {
 
   test("deterministic after a failed LLM step reports the exact reason", async () => {
     expect(await capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: NO_OUTPUT })); }))
-      .toContain("(the LLM backend was unreachable or produced no output)");
+      .toContain("(the LLM backend was unreachable or produced no usable output)");
     expect(await capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: GATE_REJECTED })); }))
       .toContain("(the LLM grouping was rejected by the acceptance gate)");
     expect(await capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: NO_BACKEND })); }))
@@ -124,7 +123,7 @@ describe("printNoSplitNotice", () => {
   });
   test("backend ran but produced nothing -> unreachable phrasing", async () => {
     expect(await capture(() => { printNoSplitNotice("auto-llm", NO_OUTPUT); }))
-      .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM backend was unreachable or produced no output, and no clean deterministic partition; emitting a single entry.");
+      .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM backend was unreachable or produced no usable output, and no clean deterministic partition; emitting a single entry.");
   });
   test("no backend -> the actionable hint, same as the split-notice variant", async () => {
     expect(await capture(() => { printNoSplitNotice("llm", NO_BACKEND); }))
@@ -178,7 +177,7 @@ describe("reviewSplit (confirmFn seam)", () => {
       () => Promise.resolve(false),
     );
     expect(out.split).toBeNull();
-    expect(out.attempted && out.split === null).toBe(false);
+    expect(out.provenance.kind).toBe("skipped"); // split:false — partitioning never ran
   });
 
   test("accept returns the original result unchanged", async () => {

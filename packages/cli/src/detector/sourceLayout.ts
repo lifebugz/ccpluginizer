@@ -11,6 +11,7 @@ import { isAgentFile, makeFrontmatterReader, type FrontmatterReader } from "./fr
 import { ARTIFACT_DIR_FOLDERS, ARTIFACT_JSON_KINDS } from "./conventions.ts";
 import { byCodeUnit } from "./slugify.ts";
 import { countSkillMdDirs } from "./skillMeta.ts";
+import { realpathSync } from "node:fs";
 import type { ScanCaches } from "./caches.ts";
 
 export interface ContainerRef {
@@ -58,6 +59,8 @@ export interface SourceLayout {
 export interface LayoutResolver {
   readonly skillsContainer: ContainerRef | null;
   readonly skillDirsOutsideContainer: number;
+  /** Advisory problems found during resolution (e.g. a symlinked container). */
+  readonly warnings: readonly string[];
   /** The walk's memoized lister, shareable with enumerateSkills and the sniffer. */
   readonly list: DirLister;
   /** Memoized frontmatter reader shared across layout resolution and sniffing. */
@@ -86,13 +89,33 @@ export function createLayoutResolver(repoRoot: string, caches: ScanCaches = {}):
   const dirs: string[] = [];
   walkTree(repoRoot, { skipDirs: SKIP_DIRS, list, onDir: (d) => dirs.push(d) });
 
-  const counted = dirs.map((absDir) => ({
-    absDir,
-    relPath: toRel(repoRoot, absDir),
-    // SKIP_DIRS children were never walked; probing them would pay fresh readdirs
-    // for dirs that can never win resolution (node_modules, dist, ...).
-    count: countSkillMdDirs(absDir, list, SKIP_DIRS),
-  }));
+  // Dirs living INSIDE a skill (a skill's templates/examples shipping their own
+  // SKILL.md files) can neither compete for the container nor count as uncovered
+  // skills — they are content of the skill that carries them.
+  const insideSkillMemo = new Map<string, boolean>();
+  const insideSkill = (dir: string): boolean => {
+    if (dir === repoRoot) {
+      return false;
+    }
+    const memo = insideSkillMemo.get(dir);
+    if (memo !== undefined) {
+      return memo;
+    }
+    const parent = join(dir, "..");
+    const result = dirContainsFile(list, parent, "SKILL.md") || insideSkill(parent);
+    insideSkillMemo.set(dir, result);
+    return result;
+  };
+
+  const counted = dirs
+    .filter((d) => !insideSkill(d))
+    .map((absDir) => ({
+      absDir,
+      relPath: toRel(repoRoot, absDir),
+      // SKIP_DIRS children were never walked; probing them would pay fresh readdirs
+      // for dirs that can never win resolution (node_modules, dist, ...).
+      count: countSkillMdDirs(absDir, list, SKIP_DIRS),
+    }));
   const best = pickBest(counted);
   const skillsContainer =
     best === null
@@ -101,10 +124,28 @@ export function createLayoutResolver(repoRoot: string, caches: ScanCaches = {}):
   const totalSkillDirs = counted.reduce((sum, c) => sum + c.count, 0);
   const skillDirsOutsideContainer = totalSkillDirs - (best?.count ?? 0);
 
+  // A symlinked container path would make every emitted git-subdir source point
+  // at a link blob instead of the skill files after a real clone+subdir checkout.
+  const containerWarnings: string[] = [];
+  if (best !== null) {
+    try {
+      const realContainer = realpathSync(best.absDir);
+      const expected = join(realpathSync(repoRoot), ...(best.relPath === "." ? [] : best.relPath.split("/")));
+      if (realContainer !== expected) {
+        containerWarnings.push(
+          `the skills container "${best.relPath}" resolves through a symlink; git-subdir checkouts would contain the link, not the skills — restructure or use --no-split.`,
+        );
+      }
+    } catch {
+      // realpath failure: container vanished mid-scan; downstream handles it
+    }
+  }
+
   let full: SourceLayout | null = null;
   return {
     skillsContainer,
     skillDirsOutsideContainer,
+    warnings: containerWarnings,
     list,
     readFrontmatter: readFm,
     full(): SourceLayout {
@@ -148,15 +189,14 @@ function pickBest<T extends { relPath: string; count: number }>(candidates: read
 }
 
 function isBetter(a: { relPath: string; count: number }, b: { relPath: string; count: number }): boolean {
-  if (a.count !== b.count) {
-    return a.count > b.count;
-  }
-  const segA = a.relPath.split("/").length;
-  const segB = b.relPath.split("/").length;
-  if (segA !== segB) {
-    return segA < segB;
-  }
-  return a.relPath < b.relPath;
+  return a.count > b.count || (a.count === b.count && shallowerThenCodeUnit(a.relPath, b.relPath) < 0);
+}
+
+/** Shared tie-break: fewer path segments first, then code-unit order. */
+function shallowerThenCodeUnit(a: string, b: string): number {
+  const segA = a.split("/").length;
+  const segB = b.split("/").length;
+  return segA !== segB ? segA - segB : byCodeUnit(a, b);
 }
 
 function resolveAgentsContainer(
@@ -209,19 +249,24 @@ function resolvePluginRoot(
 }
 
 /**
- * Directories whose configs count as the plugin's own: exactly the plugin root (or
- * the repo root when no plugin manifest exists) plus its .claude/ — mirroring the
- * conventions detector. Sweeping descendants would inline a stray nested
- * examples/.mcp.json into the published core entry.
+ * Directories whose configs count as the plugin's own: the plugin root (when one
+ * exists) AND the repo root, each plus its .claude/ — the same locations the
+ * single-entry conventions detector consults, so split and no-split modes see the
+ * same component set. Sweeping descendants would inline a stray nested
+ * examples/.mcp.json into the published core entry; preferUnder still ranks
+ * plugin-root hits above repo-root ones.
  */
 function anchoredDirs(
   repoRoot: string,
   dirs: readonly string[],
   pluginRoot: { relPath: string } | null,
 ): string[] {
-  const root =
-    pluginRoot === null || pluginRoot.relPath === "." ? repoRoot : join(repoRoot, pluginRoot.relPath);
-  const anchors = new Set([root, join(root, ".claude")]);
+  const anchors = new Set([repoRoot, join(repoRoot, ".claude")]);
+  if (pluginRoot !== null && pluginRoot.relPath !== ".") {
+    const root = join(repoRoot, pluginRoot.relPath);
+    anchors.add(root);
+    anchors.add(join(root, ".claude"));
+  }
   return dirs.filter((d) => anchors.has(d));
 }
 
@@ -283,7 +328,7 @@ function resolveArtifacts(
   return out;
 }
 
-/** Best `<dir>/<kind>/<kind>.json` or `<dir>/<kind>.json` hit, preferring the plugin root. */
+/** Best `<dir>/<kind>/<kind>.json` hit (the conventions-detector rule), preferring the plugin root. */
 function resolveJsonFileArtifact(
   repoRoot: string,
   dirs: readonly string[],
@@ -293,16 +338,8 @@ function resolveJsonFileArtifact(
 ): string | null {
   const fileName = `${kind}.json`;
   const hits = dirs
-    .flatMap((d) => {
-      const found: string[] = [];
-      if (dirContainsDir(list, d, kind) && dirContainsFile(list, join(d, kind), fileName)) {
-        found.push(toRel(repoRoot, join(d, kind, fileName)));
-      }
-      if (dirContainsFile(list, d, fileName)) {
-        found.push(toRel(repoRoot, join(d, fileName)));
-      }
-      return found;
-    })
+    .filter((d) => dirContainsDir(list, d, kind) && dirContainsFile(list, join(d, kind), fileName))
+    .map((d) => toRel(repoRoot, join(d, kind, fileName)))
     .sort((a, b) => preferUnder(pluginRoot, a, b));
   return hits[0] ?? null;
 }
@@ -316,9 +353,7 @@ function preferUnder(pluginRoot: { relPath: string } | null, a: string, b: strin
       return aUnder - bUnder;
     }
   }
-  const segA = a.split("/").length;
-  const segB = b.split("/").length;
-  return segA !== segB ? segA - segB : byCodeUnit(a, b);
+  return shallowerThenCodeUnit(a, b);
 }
 
 function extractServers(parsed: unknown): Record<string, unknown> | null {

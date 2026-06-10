@@ -19,7 +19,7 @@ export type DirLister = (dir: string) => readonly DirEntry[];
 /** Invoked when a path is skipped because it could not be read (not for ENOENT races). */
 export type SkipReporter = (path: string, err: unknown) => void;
 
-function isPermissionError(err: unknown): boolean {
+export function isPermissionError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   return code === "EACCES" || code === "EPERM";
 }

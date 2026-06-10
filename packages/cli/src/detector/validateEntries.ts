@@ -103,6 +103,6 @@ export function collectEntries(path: string, options: CollectOptions = {}): Coll
 }
 
 /** A parsed JSON file is either a single entry or an array of entries. */
-function toEntryList(parsed: unknown): unknown[] {
+export function toEntryList(parsed: unknown): unknown[] {
   return Array.isArray(parsed) ? parsed : [parsed];
 }

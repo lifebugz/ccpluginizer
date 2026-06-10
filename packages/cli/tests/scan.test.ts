@@ -172,7 +172,7 @@ describe("scan CLI: subprocess backend (--llm-cmd)", () => {
     );
     expect(code).toBe(0);
     expect(Array.isArray(JSON.parse(stdout))).toBe(true); // deterministic split emitted
-    expect(stderr).toMatch(/the LLM backend was unreachable or produced no output/);
+    expect(stderr).toMatch(/the LLM backend was unreachable or produced no usable output/);
   }, 30_000);
 
   test("flag overrides env for --llm-cmd", async () => {
@@ -231,7 +231,7 @@ describe("scan CLI: auto-llm reproducibility + rescue", () => {
     );
     expect(code).toBe(0);
     expect(stderr).toMatch(/--cluster=auto-llm produced no split/);
-    expect(stderr).toMatch(/the LLM backend was unreachable or produced no output/);
+    expect(stderr).toMatch(/the LLM backend was unreachable or produced no usable output/);
     expect(Array.isArray(JSON.parse(stdout))).toBe(false); // single entry
   }, 30_000);
 
@@ -349,5 +349,33 @@ describe("scan CLI: fifth-wave regressions", () => {
     expect(warnIdx).toBeGreaterThanOrEqual(0);
     expect(proposalIdx).toBeGreaterThan(warnIdx); // warnings precede the prompt
     expect(stderr.indexOf("non-skill artifacts", warnIdx + 1)).toBe(-1); // and print once
+  }, 30_000);
+});
+
+describe("scan CLI: sixth-wave regressions", () => {
+  test("a split-suppressing marker says so when --cluster was explicitly steered", async () => {
+    const root = makeNestedPlugin({
+      products: { messaging: 4, voice: 4 },
+      marker: { name: "curated", skills: ["./providers/claude/plugin/skills/"] },
+    });
+    const { stderr, code } = await runScan([root, "--cluster=metadata", "--min-skills=2"]);
+    expect(code).toBe(0);
+    expect(stderr).toMatch(/curates a single entry, so --cluster\/--llm-cmd were not consulted/);
+  }, 30_000);
+
+  test("a one-group marker-frozen split emits a JSON array, not a bare object", async () => {
+    const root = makeNestedPlugin({
+      products: { solo: 4 },
+      marker: {
+        name: "frozen",
+        core: false,
+        groups: [{ slug: "all", skills: [0, 1, 2, 3].map((i) => `./telnyx-solo-${String(i)}/`) }],
+      },
+    });
+    const { stdout, code } = await runScan([root, "--min-skills=2"]);
+    expect(code).toBe(0);
+    const parsed: unknown = JSON.parse(stdout);
+    expect(Array.isArray(parsed)).toBe(true); // the split contract, even at K=1
+    expect((parsed as unknown[]).length).toBe(1);
   }, 30_000);
 });

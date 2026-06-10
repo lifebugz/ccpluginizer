@@ -141,6 +141,16 @@ describe("parseYamlFrontmatter: block scalars", () => {
     const body = ["text: |", "  line one", "  line two"].join("\n");
     expect(parseYamlFrontmatter(body)["text"]).toBe("line one\nline two");
   });
+
+  test("a literal block keeps internal indentation (code samples survive)", () => {
+    const body = ["text: |", "  code:", "      indented()", "  back"].join("\n");
+    expect(parseYamlFrontmatter(body)["text"]).toBe("code:\n    indented()\nback");
+  });
+
+  test("a folded block treats a blank line as a paragraph break, not a double space", () => {
+    const body = ["description: >-", "  para one.", "", "  para two."].join("\n");
+    expect(parseYamlFrontmatter(body)["description"]).toBe("para one.\npara two.");
+  });
 });
 
 describe("parseYamlFrontmatter: depth and edge cases", () => {

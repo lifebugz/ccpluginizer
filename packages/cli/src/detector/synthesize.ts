@@ -1,6 +1,6 @@
 import * as v from "valibot";
 import { checkMarketplaceGuard, isAlreadyMarketplace } from "./marketplaceGuard.ts";
-import { detectMarkerFile, isFreezeOnlyMarker, markerSuppressesSplit } from "./markerFile.ts";
+import { detectMarkerFile, hasComponentCuration, isFreezeOnlyMarker, markerSuppressesSplit } from "./markerFile.ts";
 import { detectConventions } from "./conventions.ts";
 import { detectNonStandardManifest } from "./nonStandardManifest.ts";
 import { detectContentSniff } from "./contentSniff.ts";
@@ -30,7 +30,7 @@ export interface SynthesizeInput {
 /** Default threshold: only attempt a split when a repo has at least this many skills. */
 export const DEFAULT_MIN_SKILLS_TO_SPLIT = 25;
 
-const NO_SPLIT: SplitProvenance = { kind: "none" };
+const SKIPPED: SplitProvenance = { kind: "skipped" };
 
 export interface SynthesizeEntriesInput extends SynthesizeInput {
   /** Attempt a guarded auto-split (default true). `false` forces a single entry. */
@@ -69,10 +69,11 @@ export interface SynthesizeEntriesResult {
   readonly entries: MarketplaceEntry[];
   /** Non-null exactly when provenance.kind !== "none": the emitted split's shape. */
   readonly split: SplitInfo | null;
-  /** Where the grouping came from — or kind "none", carrying the LLM failure detail. */
+  /**
+   * Where the grouping came from. "skipped" = partitioning never ran (sub-threshold,
+   * no container, marker-suppressed, --no-split); "none" = it ran and found nothing.
+   */
   readonly provenance: SplitProvenance;
-  /** Did partitioning actually run (above threshold, or a frozen marker forced it)? */
-  readonly attempted: boolean;
   /** Non-null when a split was emitted; the freezable marker draft. */
   readonly marker: MarkerDraft | null;
   /** The committed marker this scan parsed (so callers never re-read the file). */
@@ -126,8 +127,7 @@ export async function synthesizeEntries(
   return {
     entries,
     split: null,
-    provenance: attempt?.provenance ?? NO_SPLIT,
-    attempted: attempt?.attempted ?? false,
+    provenance: attempt?.provenance ?? SKIPPED,
     marker: null,
     existingMarker: marker,
     // Computed after the fall-through detection ran, so sniff-time skips count too.
@@ -142,7 +142,6 @@ type SplitAttempt =
   /** No split: what happened, for the fall-through result. */
   | {
       readonly fulfilled: null;
-      readonly attempted: boolean;
       readonly provenance: SplitProvenance;
       readonly warnings: string[];
     };
@@ -158,19 +157,18 @@ async function attemptSplit(
   // (agents/mcp/pluginRoot/artifacts) resolves after the partition succeeds, so
   // sub-threshold scans never pay for a repo-wide .md parse.
   const resolver = createLayoutResolver(input.repoRoot, caches);
-  const none = (attempted: boolean, provenance: SplitProvenance, warnings: string[]): SplitAttempt => ({
+  const none = (provenance: SplitProvenance, warnings: string[]): SplitAttempt => ({
     fulfilled: null,
-    attempted,
     provenance,
-    warnings,
+    warnings: [...resolver.warnings, ...warnings],
   });
 
-  const frozen = marker !== null && !markerSuppressesSplit(marker);
-  const markerGroups = marker?.groups;
+  // The call site already excluded null and split-suppressing markers, so any
+  // marker here freezes a split.
+  const frozen = marker !== null;
   if (resolver.skillsContainer === null) {
     return none(
-      false,
-      NO_SPLIT,
+      SKIPPED,
       frozen
         ? ['.ccpluginizer.json freezes a split, but no skills container was found; ignoring the frozen groups and emitting a single entry.']
         : [],
@@ -179,7 +177,7 @@ async function attemptSplit(
 
   const skills = enumerateSkills(resolver.skillsContainer.absDir, resolver.list, resolver.readFrontmatter);
   if (!frozen && skills.length < minSkills) {
-    return none(false, NO_SPLIT, []);
+    return none(SKIPPED, []);
   }
   // SKILL.md dirs the container holds but enumeration could not parse would vanish
   // from every slice — the one dropped-content class with no other warning channel.
@@ -192,28 +190,39 @@ async function attemptSplit(
         ]
       : [];
 
-  // Below the threshold, only a marker-driven grouping can be honored — skip the
-  // LLM step entirely rather than paying for a rescue that would be discarded.
-  const onlyMarkerCanWin = frozen && skills.length < minSkills;
+  // Re-curating a repo that already publishes a marketplace is deliberate but never
+  // silent — and never consults an LLM: its catalog IS the curation, and skill names
+  // must not leave the machine just to fail into the single-entry abort.
+  const recuration = isAlreadyMarketplace(input.repoRoot);
+  const recurationWarnings = recuration
+    ? [
+        'this repo already publishes a marketplace (.claude-plugin/marketplace.json); the split re-curates it deterministically (the LLM step is never consulted here). Install via `/plugin marketplace add` instead if you just want the existing catalog.',
+      ]
+    : [];
+
+  // Below the threshold, only a marker-driven grouping can be honored: the
+  // partition layer stops (no cascade, no LLM) when the marker is voided.
+  const markerMandatory = frozen && skills.length < minSkills;
   const { groups, provenance, warnings: partitionWarnings } = await partitionSkills(skills, {
     strategy: input.strategy ?? DEFAULT_STRATEGY,
-    ...(frozen && markerGroups !== undefined ? { markerGroups } : {}),
-    ...(input.group !== undefined ? { group: input.group } : {}),
-    ...(onlyMarkerCanWin ? { suppressLlm: true } : {}),
+    ...(frozen ? { markerGroups: marker.groups ?? [] } : {}),
+    ...(input.group !== undefined && !recuration ? { group: input.group } : {}),
+    ...(markerMandatory ? { markerMandatory: true } : {}),
   });
   if (groups === null) {
     // partitionWarnings already explains a voided marker ("ignoring the frozen split").
-    return none(!onlyMarkerCanWin, provenance, [...partitionWarnings, ...unparsedWarnings]);
-  }
-  // A voided marker authorized this attempt but did not win; without it the repo
-  // never cleared the min-skills gate — honor the threshold.
-  if (onlyMarkerCanWin && provenance.kind !== "marker") {
-    return none(false, NO_SPLIT, [...partitionWarnings, ...unparsedWarnings]);
+    return none(markerMandatory ? SKIPPED : provenance, [...partitionWarnings, ...unparsedWarnings]);
   }
 
   const layout = resolver.full();
   // A voided marker must not keep steering the split it no longer defines.
   const markerDrives = provenance.kind === "marker";
+  const componentCurationWarnings =
+    markerDrives && marker !== null && hasComponentCuration(marker)
+      ? [
+          'the component fields in .ccpluginizer.json (skills/agents/mcpServers/...) apply only to the single-entry path; the split derives its core from the repo layout.',
+        ]
+      : [];
   const { entries, marker: markerDraft, agentsDropped, coreEmitted } = buildSplitEntries(
     groups,
     layout,
@@ -226,24 +235,18 @@ async function attemptSplit(
       ...(markerDrives && marker?.name !== undefined ? { markerName: marker.name } : {}),
     },
   );
-  // Re-curating a repo that already publishes a marketplace is deliberate (the
-  // split adds value the existing catalog lacks) but must never be silent.
-  const recurationWarnings = isAlreadyMarketplace(input.repoRoot)
-    ? [
-        'this repo already publishes a marketplace (.claude-plugin/marketplace.json); the split re-curates it. Install via `/plugin marketplace add` instead if you just want the existing catalog.',
-      ]
-    : [];
   return {
     fulfilled: {
       entries,
       split: { groupCount: groups.length, coreEmitted, umbrellaEmitted: markerDraft.umbrella },
       provenance,
-      attempted: true,
       marker: markerDraft,
       existingMarker: marker,
       warnings: [
+        ...resolver.warnings,
         ...partitionWarnings,
         ...unparsedWarnings,
+        ...componentCurationWarnings,
         ...recurationWarnings,
         ...collectSplitWarnings(layout, input.sourceRepo, coreEmitted, markerDraft.umbrella, agentsDropped),
         ...skipWarnings(),
@@ -277,8 +280,16 @@ function collectSplitWarnings(
 
   // Agents ride along in the core entry; they are dropped when core is absent, or
   // when their container had to be refused as the core root (it would auto-load a
-  // skills tree). Either way an umbrella still carries them.
-  if (layout.agentsContainer !== null && !umbrellaEmitted) {
+  // skills tree). An umbrella only excuses that when it actually carries them —
+  // a strict plugin-root umbrella holds nothing outside its root.
+  const umbrellaRootForAgents = layout.pluginRoot?.relPath ?? ".";
+  const umbrellaCarriesAgents =
+    umbrellaEmitted &&
+    layout.agentsContainer !== null &&
+    (umbrellaRootForAgents === "." ||
+      layout.agentsContainer.relPath === umbrellaRootForAgents ||
+      layout.agentsContainer.relPath.startsWith(`${umbrellaRootForAgents}/`));
+  if (layout.agentsContainer !== null && !umbrellaCarriesAgents) {
     if (agentsDropped) {
       warnings.push(
         `The agents in "${layout.agentsContainer.relPath}" are not carried by the core entry (no safe core root exists — rooting it would auto-load a skills/ tree always-on); they will be dropped. Use --umbrella to retain them.`,
@@ -649,10 +660,17 @@ function buildUmbrellaEntry(
   skillsContainer: ContainerRef,
   sourceRepo: string,
 ): MarketplaceEntry {
-  if (layout.pluginRoot !== null) {
+  // The strict plugin-root form only makes sense when the plugin root actually
+  // contains the skills — a vestigial nested manifest must not produce an
+  // "everything" entry that carries zero skills.
+  const root = layout.pluginRoot?.relPath;
+  const rootContainsSkills =
+    root !== undefined &&
+    (root === "." || skillsContainer.relPath === root || skillsContainer.relPath.startsWith(`${root}/`));
+  if (root !== undefined && rootContainsSkills) {
     return {
       name: base,
-      source: makeGitSubdirSource(sourceRepo, layout.pluginRoot.relPath),
+      source: makeGitSubdirSource(sourceRepo, root),
       strict: true,
     };
   }
