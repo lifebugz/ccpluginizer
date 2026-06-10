@@ -56,8 +56,13 @@ export interface CollectedEntries {
   readonly sources: string[];
 }
 
+export interface CollectOptions {
+  /** Tolerate a directory with zero *.json files (a legitimately empty catalog). */
+  readonly allowEmptyDir?: boolean;
+}
+
 /** Read parsed entries from a file (object or array) or a directory of *.json files. */
-export function collectEntries(path: string): CollectedEntries {
+export function collectEntries(path: string, options: CollectOptions = {}): CollectedEntries {
   if (!existsSync(path)) {
     throw new Error(`No such file or directory: ${path}`);
   }
@@ -65,6 +70,11 @@ export function collectEntries(path: string): CollectedEntries {
   const sources: string[] = [];
   const add = (parsed: unknown, fileLabel: string): void => {
     const list = toEntryList(parsed);
+    // A `[]` file is a truncated artifact, never a valid entry — silently flattening
+    // it to nothing would drop a repo from the catalog with validate reporting OK.
+    if (list.length === 0) {
+      throw new Error(`No entries found in: ${fileLabel}`);
+    }
     list.forEach((item, i) => {
       items.push(item);
       sources.push(list.length > 1 ? `${fileLabel}[${String(i)}]` : fileLabel);
@@ -76,7 +86,8 @@ export function collectEntries(path: string): CollectedEntries {
       .sort();
     // A directory with no entry files is almost always a wrong-path mistake;
     // returning [] would make `validate <dir>` falsely report "OK (0 entries)".
-    if (files.length === 0) {
+    // Builders that legitimately handle an empty catalog opt out.
+    if (files.length === 0 && options.allowEmptyDir !== true) {
       throw new Error(`No entry JSON files (*.json) found in directory: ${path}`);
     }
     // Flatten array-shaped files the same way the single-file branch does, so a
@@ -87,10 +98,6 @@ export function collectEntries(path: string): CollectedEntries {
     }
   } else {
     add(readJsonFile(path), basename(path));
-  }
-  // A `[]` file (or a directory of them) is a truncated artifact, not a valid catalog.
-  if (items.length === 0) {
-    throw new Error(`No entries found in: ${path}`);
   }
   return { items, sources };
 }

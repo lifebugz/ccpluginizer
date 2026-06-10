@@ -81,23 +81,24 @@ export interface WalkOptions {
 /** Depth-first walk from root (root itself visits onDir), skipping skipDirs by name. */
 export function walkTree(root: string, options: WalkOptions): void {
   const list = options.list ?? makeDirLister();
-  // Cycle/alias guard: the lister follows symlinks, so a link to an ancestor (or a
-  // sibling alias of an already-walked dir) would otherwise be re-traversed and
-  // double-counted. Every directory registers its dev:ino identity, and real
-  // directories are visited before symlinked ones so the real path wins aliasing.
-  const seen = new Set<string>();
-  const visit = (dir: string): void => {
-    let id: string;
+  // Alias/cycle guard. The lister follows symlinks, so a link to an ancestor (or an
+  // alias of another dir anywhere in the tree) would be re-traversed and double-
+  // counted. Real directories are walked FIRST — globally, not just per parent — and
+  // symlinked directories are deferred to a queue drained afterwards, so the real
+  // path always registers an inode before any alias can claim it. Identity stats are
+  // paid lazily: a symlink-free repo never stats at all.
+  const realDirs: string[] = [];
+  const pendingSymlinks: string[] = [];
+  let seen: Set<string> | null = null;
+  const idOf = (dir: string): string | null => {
     try {
       const st = statSync(dir);
-      id = `${String(st.dev)}:${String(st.ino)}`;
+      return `${String(st.dev)}:${String(st.ino)}`;
     } catch {
-      return; // vanished / unreadable — skip
+      return null; // vanished / unreadable — caller skips
     }
-    if (seen.has(id)) {
-      return;
-    }
-    seen.add(id);
+  };
+  const walkInto = (dir: string): void => {
     options.onDir?.(dir);
     const entries = list(dir).filter((e) => !options.skipDirs.has(e.name));
     for (const entry of entries) {
@@ -107,16 +108,37 @@ export function walkTree(root: string, options: WalkOptions): void {
     }
     for (const entry of entries) {
       if (entry.isDirectory && !entry.isSymlink) {
-        visit(join(dir, entry.name));
-      }
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory && entry.isSymlink) {
-        visit(join(dir, entry.name));
+        const full = join(dir, entry.name);
+        realDirs.push(full);
+        if (seen !== null) {
+          const id = idOf(full);
+          if (id === null || seen.has(id)) {
+            continue;
+          }
+          seen.add(id);
+        }
+        walkInto(full);
+      } else if (entry.isDirectory && entry.isSymlink) {
+        pendingSymlinks.push(join(dir, entry.name));
       }
     }
   };
-  visit(root);
+  realDirs.push(root);
+  walkInto(root);
+  while (pendingSymlinks.length > 0) {
+    // First symlinked dir encountered: register every real dir's identity now.
+    seen ??= new Set(realDirs.map(idOf).filter((id): id is string => id !== null));
+    const dir = pendingSymlinks.shift();
+    if (dir === undefined) {
+      break;
+    }
+    const id = idOf(dir);
+    if (id === null || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    walkInto(dir);
+  }
 }
 
 /**

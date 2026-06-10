@@ -6,11 +6,12 @@ import {
   readJsonFile,
   walkTree,
   type DirLister,
-  type SkipReporter,
 } from "./fsWalk.ts";
 import { isAgentFile, makeFrontmatterReader, type FrontmatterReader } from "./frontmatterIo.ts";
-import { ARTIFACT_DIR_FOLDERS, type ARTIFACT_JSON_KINDS } from "./conventions.ts";
+import { ARTIFACT_DIR_FOLDERS, ARTIFACT_JSON_KINDS } from "./conventions.ts";
 import { byCodeUnit } from "./slugify.ts";
+import { countSkillMdDirs } from "./skillMeta.ts";
+import type { ScanCaches } from "./caches.ts";
 
 export interface ContainerRef {
   readonly absDir: string;
@@ -79,14 +80,8 @@ const SKIP_DIRS = new Set([
  * only consumed once a split actually fires — resolve lazily on full(). This keeps
  * the common sub-threshold scan from reading and parsing every .md in the repo.
  */
-export interface LayoutCaches {
-  readonly list?: DirLister;
-  readonly readFrontmatter?: FrontmatterReader;
-  readonly onSkip?: SkipReporter;
-}
-
-export function createLayoutResolver(repoRoot: string, caches: LayoutCaches = {}): LayoutResolver {
-  const list = caches.list ?? makeDirLister(caches.onSkip);
+export function createLayoutResolver(repoRoot: string, caches: ScanCaches = {}): LayoutResolver {
+  const list = caches.list ?? makeDirLister();
   const readFm = caches.readFrontmatter ?? makeFrontmatterReader();
   const dirs: string[] = [];
   walkTree(repoRoot, { skipDirs: SKIP_DIRS, list, onDir: (d) => dirs.push(d) });
@@ -94,7 +89,9 @@ export function createLayoutResolver(repoRoot: string, caches: LayoutCaches = {}
   const counted = dirs.map((absDir) => ({
     absDir,
     relPath: toRel(repoRoot, absDir),
-    count: countSkillChildren(absDir, list),
+    // SKIP_DIRS children were never walked; probing them would pay fresh readdirs
+    // for dirs that can never win resolution (node_modules, dist, ...).
+    count: countSkillMdDirs(absDir, list, SKIP_DIRS),
   }));
   const best = pickBest(counted);
   const skillsContainer =
@@ -129,18 +126,6 @@ export function createLayoutResolver(repoRoot: string, caches: LayoutCaches = {}
 
 export function resolveSourceLayout(repoRoot: string): SourceLayout {
   return createLayoutResolver(repoRoot).full();
-}
-
-function countSkillChildren(absDir: string, list: DirLister): number {
-  let count = 0;
-  for (const child of list(absDir)) {
-    // SKIP_DIRS children were never walked, so probing them would pay fresh
-    // readdirs for dirs that can never win resolution (node_modules, dist, ...).
-    if (child.isDirectory && !SKIP_DIRS.has(child.name) && dirContainsFile(list, join(absDir, child.name), "SKILL.md")) {
-      count++;
-    }
-  }
-  return count;
 }
 
 function toRel(repoRoot: string, abs: string): string {
@@ -280,9 +265,11 @@ function resolveArtifacts(
   // the tree must not be reported (or emitted) as a slash-command artifact.
   const anchored = anchoredDirs(repoRoot, dirs, pluginRoot);
   // hooks and monitors share the two-location `<kind>/<kind>.json` | `<kind>.json` probe.
-  const hooks = resolveJsonFileArtifact(repoRoot, anchored, list, pluginRoot, "hooks");
-  if (hooks !== null) {
-    out.push({ kind: "hooks", relPath: hooks });
+  for (const kind of ARTIFACT_JSON_KINDS) {
+    const hit = resolveJsonFileArtifact(repoRoot, anchored, list, pluginRoot, kind);
+    if (hit !== null) {
+      out.push({ kind, relPath: hit });
+    }
   }
   for (const kind of ARTIFACT_DIR_FOLDERS) {
     const hits = anchored
@@ -292,10 +279,6 @@ function resolveArtifacts(
     if (hits[0] !== undefined) {
       out.push({ kind, relPath: hits[0] });
     }
-  }
-  const monitors = resolveJsonFileArtifact(repoRoot, anchored, list, pluginRoot, "monitors");
-  if (monitors !== null) {
-    out.push({ kind: "monitors", relPath: monitors });
   }
   return out;
 }

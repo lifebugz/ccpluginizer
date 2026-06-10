@@ -6,14 +6,26 @@ import { readFileSync } from "node:fs";
 import * as v from "valibot";
 import { AgentFrontmatterSchema, SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
 import { extractFrontmatter } from "./yaml.ts";
+import type { SkipReporter } from "./fsWalk.ts";
 
-/** Read a file and extract its YAML frontmatter; null when unreadable or fence-less. */
-export function readFrontmatter(filePath: string): Record<string, unknown> | null {
+function isPermissionError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "EACCES" || code === "EPERM";
+}
+
+/**
+ * Read a file and extract its YAML frontmatter; null when unreadable or fence-less.
+ * Permission failures report to `onSkip` so detection is never silently incomplete.
+ */
+export function readFrontmatter(filePath: string, onSkip?: SkipReporter): Record<string, unknown> | null {
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf8");
-  } catch {
-    return null; // vanished / EACCES between listing and read — skip, don't abort the scan
+  } catch (err) {
+    if (isPermissionError(err)) {
+      onSkip?.(filePath, err);
+    }
+    return null; // vanished mid-walk or unreadable — skip, don't abort the scan
   }
   return extractFrontmatter(raw);
 }
@@ -21,13 +33,13 @@ export function readFrontmatter(filePath: string): Record<string, unknown> | nul
 export type FrontmatterReader = (file: string) => Record<string, unknown> | null;
 
 /** Memoizing frontmatter reader, so layout resolution and sniffing parse each file once. */
-export function makeFrontmatterReader(): FrontmatterReader {
+export function makeFrontmatterReader(onSkip?: SkipReporter): FrontmatterReader {
   const cache = new Map<string, Record<string, unknown> | null>();
   return (file: string): Record<string, unknown> | null => {
     if (cache.has(file)) {
       return cache.get(file) ?? null;
     }
-    const fm = readFrontmatter(file);
+    const fm = readFrontmatter(file, onSkip);
     cache.set(file, fm);
     return fm;
   };

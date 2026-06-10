@@ -3,12 +3,11 @@ import { checkMarketplaceGuard, isAlreadyMarketplace } from "./marketplaceGuard.
 import { detectMarkerFile, isFreezeOnlyMarker, markerSuppressesSplit } from "./markerFile.ts";
 import { detectConventions } from "./conventions.ts";
 import { detectNonStandardManifest } from "./nonStandardManifest.ts";
-import { detectContentSniff, type SniffCaches } from "./contentSniff.ts";
+import { detectContentSniff } from "./contentSniff.ts";
+import { makeScanCaches, type ScanCaches } from "./caches.ts";
 import { normalizePathsAgainstRepo } from "./normalize.ts";
 import { createLayoutResolver, type ContainerRef, type SourceLayout } from "./sourceLayout.ts";
 import { countSkillMdDirs, enumerateSkills } from "./skillMeta.ts";
-import { makeDirLister } from "./fsWalk.ts";
-import { makeFrontmatterReader } from "./frontmatterIo.ts";
 import {
   DEFAULT_STRATEGY,
   partitionSkills,
@@ -47,7 +46,7 @@ export interface SynthesizeEntriesInput extends SynthesizeInput {
   /** Already-parsed marker from a previous synthesis (null = known absent), to skip re-reading. */
   readonly existingMarker?: MarkerFile | null;
   /** Walk/parse caches from a previous synthesis over the same repo. */
-  readonly caches?: SniffCaches;
+  readonly caches?: ScanCaches;
 }
 
 /** Shape facts of an emitted split (the notice's data source). */
@@ -81,7 +80,7 @@ export interface SynthesizeEntriesResult {
   /** Advisory messages for the caller to surface (e.g. dropped artifacts, placeholder URLs). */
   readonly warnings: string[];
   /** Walk/parse caches, reusable by a follow-up synthesis (e.g. interactive decline). */
-  readonly caches: SniffCaches;
+  readonly caches: ScanCaches;
 }
 
 /**
@@ -97,13 +96,11 @@ export async function synthesizeEntries(
     input.existingMarker !== undefined ? input.existingMarker : detectMarkerFile(input.repoRoot);
 
   // Walk/parse caches and the permission-skip channel are owned here so BOTH the
-  // split attempt and the fall-through detection report an incomplete walk.
-  const skippedPaths: string[] = [];
-  const caches: SniffCaches =
-    input.caches ?? {
-      list: makeDirLister((p) => skippedPaths.push(p)),
-      readFrontmatter: makeFrontmatterReader(),
-    };
+  // split attempt and the fall-through detection report an incomplete walk. The
+  // skip array travels INSIDE the caches, so a follow-up synthesis (interactive
+  // decline) re-reports the original skips instead of silently dropping them.
+  const caches: ScanCaches = input.caches ?? makeScanCaches();
+  const skippedPaths = caches.skippedPaths ?? [];
   const skipWarnings = (): string[] =>
     skippedPaths.length > 0
       ? [
@@ -153,7 +150,7 @@ type SplitAttempt =
 async function attemptSplit(
   input: SynthesizeEntriesInput,
   marker: MarkerFile | null,
-  caches: SniffCaches,
+  caches: ScanCaches,
   skipWarnings: () => string[],
 ): Promise<SplitAttempt> {
   const minSkills = input.minSkillsToSplit ?? DEFAULT_MIN_SKILLS_TO_SPLIT;
@@ -205,17 +202,8 @@ async function attemptSplit(
     ...(onlyMarkerCanWin ? { suppressLlm: true } : {}),
   });
   if (groups === null) {
-    return none(
-      !onlyMarkerCanWin,
-      provenance,
-      [
-        ...partitionWarnings,
-        ...(frozen
-          ? ['the committed .ccpluginizer.json "groups" matched no skill directory and no fallback partition was found; emitting a single entry — re-run scan --write-marker to refresh the frozen split.']
-          : []),
-        ...unparsedWarnings,
-      ],
-    );
+    // partitionWarnings already explains a voided marker ("ignoring the frozen split").
+    return none(!onlyMarkerCanWin, provenance, [...partitionWarnings, ...unparsedWarnings]);
   }
   // A voided marker authorized this attempt but did not win; without it the repo
   // never cleared the min-skills gate — honor the threshold.
@@ -346,7 +334,7 @@ export function synthesizeEntry(input: SynthesizeInput): MarketplaceEntry {
 function synthesizeEntryWithMarker(
   input: SynthesizeInput,
   marker: MarkerFile | null,
-  caches?: SniffCaches,
+  caches?: ScanCaches,
 ): MarketplaceEntry {
   if (marker !== null) {
     // A freeze-only marker (groups, no component fields) curates the SPLIT, not the
@@ -379,7 +367,7 @@ function markerIdentity(marker: MarkerFile): Partial<MarketplaceEntry> {
   };
 }
 
-function synthesizeEntryFromDetection(input: SynthesizeInput, caches?: SniffCaches): MarketplaceEntry {
+function synthesizeEntryFromDetection(input: SynthesizeInput, caches?: ScanCaches): MarketplaceEntry {
   const conventionFindings = detectConventions(input.repoRoot);
   const manifestResult = detectNonStandardManifest(input.repoRoot);
   const sniffFindings = detectContentSniff(input.repoRoot, caches);

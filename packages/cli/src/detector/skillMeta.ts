@@ -60,12 +60,20 @@ function toMeta(dir: string, fm: v.InferOutput<typeof SkillFrontmatterSchema>): 
 }
 
 /**
- * Direct child dirs holding a SKILL.md, parse success or not — the coverage
- * denominator for "skills the split silently dropped" accounting. Uses the same
- * unfiltered child set as enumerateSkills, so the two counts are comparable.
+ * Direct child dirs holding a SKILL.md, parse success or not. With no skip set this
+ * uses the same unfiltered child set as enumerateSkills (the coverage denominator
+ * for "skills the split silently dropped"); container-resolution scoring passes its
+ * SKIP_DIRS to avoid probing children that can never win.
  */
-export function countSkillMdDirs(containerDir: string, list: DirLister = makeDirLister()): number {
+export function countSkillMdDirs(
+  containerDir: string,
+  list: DirLister = makeDirLister(),
+  skipDirs?: ReadonlySet<string>,
+): number {
   return list(containerDir).filter(
-    (e) => e.isDirectory && dirContainsFile(list, join(containerDir, e.name), "SKILL.md"),
+    (e) =>
+      e.isDirectory &&
+      !(skipDirs?.has(e.name) ?? false) &&
+      dirContainsFile(list, join(containerDir, e.name), "SKILL.md"),
   ).length;
 }

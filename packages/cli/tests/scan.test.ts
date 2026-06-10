@@ -262,7 +262,7 @@ describe("scan CLI: --write-marker merge + --out-dir hygiene", () => {
     expect(Array.isArray(after["groups"])).toBe(true);
   }, 30_000);
 
-  test("--out-dir warns about (but never deletes) stale entries from a previous grouping", async () => {
+  test("local-path scans never claim stale ownership (placeholder URLs collide by basename)", async () => {
     const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
     const outDir = tempDir("ccp-stale-");
     await runScan([root, "--cluster=metadata", "--min-skills=2", `--out-dir=${outDir}`]);
@@ -271,17 +271,17 @@ describe("scan CLI: --write-marker merge + --out-dir hygiene", () => {
     const core = JSON.parse(readFileSync(join(outDir, coreFile ?? ""), "utf8")) as { source: { url: string } };
     const base = (coreFile ?? "").replace(/-core\.json$/, "");
     const staleName = `${base}-oldslice.json`;
-    // Stale detection requires provable ownership: the file must reference this
-    // repo's source URL, or it could be a sibling repo's live entry.
+    // Two unrelated local repos with the same directory basename share one
+    // placeholder URL, so ownership is unprovable — the scan must stay quiet
+    // rather than steer the user to delete a sibling repo's live entries.
     writeFileSync(
       join(outDir, staleName),
       JSON.stringify({ name: `${base}-oldslice`, source: core.source, strict: false }) + "\n",
     );
     const { stderr, code } = await runScan([root, "--cluster=metadata", "--min-skills=2", `--out-dir=${outDir}`]);
     expect(code).toBe(0);
-    expect(stderr).toMatch(/previous scan/);
-    expect(stderr).toContain(staleName);
-    expect(existsSync(join(outDir, staleName))).toBe(true); // warn-only, never delete
+    expect(stderr).not.toMatch(/previous scan/);
+    expect(existsSync(join(outDir, staleName))).toBe(true); // never deleted either
   }, 30_000);
 });
 
@@ -323,5 +323,31 @@ describe("scan CLI: fourth-wave regressions", () => {
     expect(code).toBe(0);
     expect(stderr).toMatch(/--cluster=metadata produced no split — no clean deterministic partition/);
     expect(Array.isArray(JSON.parse(stdout))).toBe(false); // single entry
+  }, 30_000);
+});
+
+describe("scan CLI: fifth-wave regressions", () => {
+  test("a configured LLM is also reported as ignored under forced deterministic strategies", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
+    const { stderr, code } = await runScan(
+      [root, "--cluster=metadata", "--min-skills=2"],
+      { env: { CCPLUGINIZER_LLM_CMD: "echo hi" } },
+    );
+    expect(code).toBe(0);
+    expect(stderr).toMatch(/--cluster=metadata is deterministic-only/);
+  }, 30_000);
+
+  test("interactive mode surfaces the proposal's warnings BEFORE the review prompt, once", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 }, hooks: true });
+    // Non-TTY stdin auto-accepts the confirm default; the ordering (and the absence
+    // of a duplicate print on accept) is what this pins. The decline path's warning
+    // carry-over is covered by the reviewSplit unit seam + the shared caches test.
+    const { stderr, code } = await runScan([root, "--cluster=metadata", "--min-skills=2", "--interactive"]);
+    expect(code).toBe(0);
+    const warnIdx = stderr.indexOf("non-skill artifacts");
+    const proposalIdx = stderr.indexOf("proposed split");
+    expect(warnIdx).toBeGreaterThanOrEqual(0);
+    expect(proposalIdx).toBeGreaterThan(warnIdx); // warnings precede the prompt
+    expect(stderr.indexOf("non-skill artifacts", warnIdx + 1)).toBe(-1); // and print once
   }, 30_000);
 });

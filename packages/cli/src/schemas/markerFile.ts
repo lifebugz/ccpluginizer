@@ -1,14 +1,15 @@
 import * as v from "valibot";
+import { NAME_REGEX } from "./marketplaceEntry.ts";
 
 const PathString = v.pipe(v.string(), v.startsWith("./"));
 
 const GroupSchema = v.strictObject({
-  slug: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]*$/)),
+  slug: v.pipe(v.string(), v.regex(NAME_REGEX)),
   skills: v.array(PathString),
 });
 
 export const MarkerFileSchema = v.strictObject({
-  name: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]*$/)),
+  name: v.pipe(v.string(), v.regex(NAME_REGEX)),
   description: v.optional(v.string()),
   // Frozen split: when `groups` is present it authoritatively defines the slices.
   // `core` requests a shared core entry; `umbrella` also emits the everything-entry.

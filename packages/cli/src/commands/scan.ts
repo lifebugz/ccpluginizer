@@ -1,6 +1,6 @@
 import { Crust } from "@crustjs/core";
 import { confirm } from "@crustjs/prompts";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveSource, inferSourceRepo, parseSourceInput } from "../sources/index.ts";
 import {
@@ -60,6 +60,14 @@ export const scanCommand = new Crust("scan")
       output: trimOrUndefined(flags.output),
       outDir: trimOrUndefined(flags.outDir),
     };
+    if (
+      outputFlags.outDir !== undefined &&
+      existsSync(outputFlags.outDir) &&
+      !statSync(outputFlags.outDir).isDirectory()
+    ) {
+      // Fail before the scan, not with a raw ENOTDIR after all the work is done.
+      throw new Error(`--out-dir "${outputFlags.outDir}" exists and is not a directory`);
+    }
 
     const repoPath = await resolveSource(args.repo);
     const sourceRepo = inferSourceRepo(args.repo);
@@ -84,15 +92,25 @@ export const scanCommand = new Crust("scan")
     // on PATH). Only worth saying when this scan's split could actually have used it —
     // sub-threshold and marker-frozen runs never consult any strategy.
     const splitCouldHaveUsedLlm = result.attempted && result.provenance.kind !== "marker";
-    if (wantSplit && requestedCluster === "auto" && llmConfig.cmd !== undefined && splitCouldHaveUsedLlm) {
+    if (wantSplit && !strategyUsesLlm(requestedCluster) && llmConfig.cmd !== undefined && splitCouldHaveUsedLlm) {
       const source = llmConfig.cmdFromEnv ? "CCPLUGINIZER_LLM_CMD" : "--llm-cmd";
       console.error(
-        `ccpluginizer: an LLM is configured (${source}) but auto is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
+        `ccpluginizer: an LLM is configured (${source}) but --cluster=${requestedCluster} is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
       );
     }
 
+    let warningsPrinted = false;
+    let reviewed: SynthesizeEntriesResult | null = null;
     if (flags.interactive && result.split !== null) {
-      result = await reviewSplit(result, { repoPath, sourceRepo });
+      // Surface the proposal's warnings before asking — a declined split otherwise
+      // discards everything the original synthesis wanted the user to know.
+      for (const warning of result.warnings) {
+        console.error(`ccpluginizer: warning: ${warning}`);
+      }
+      warningsPrinted = true;
+      const next = await reviewSplit(result, { repoPath, sourceRepo });
+      reviewed = next !== result ? next : null;
+      result = next;
     }
 
     if (result.split !== null) {
@@ -106,8 +124,10 @@ export const scanCommand = new Crust("scan")
       }
     }
 
-    for (const warning of result.warnings) {
-      console.error(`ccpluginizer: warning: ${warning}`);
+    if (!warningsPrinted || reviewed !== null) {
+      for (const warning of result.warnings) {
+        console.error(`ccpluginizer: warning: ${warning}`);
+      }
     }
 
     if (flags.writeMarker) {
@@ -195,15 +215,7 @@ export function makeLazyGrouper(
     if (backend === undefined) {
       backend = resolve(config);
     }
-    if (backend === null) {
-      return null;
-    }
-    const run = await backend.fn(skills);
-    return {
-      kind: backend.kind,
-      groups: run.groups,
-      ...(run.commit !== undefined ? { commit: run.commit } : {}),
-    };
+    return backend === null ? null : backend.fn(skills);
   };
 }
 
@@ -260,7 +272,6 @@ export function printNoSplitNotice(requestedCluster: ClusterStrategy, llmFailure
   );
 }
 
-/** Merge the fresh draft over the existing marker, preserving hand-curated fields. */
 interface ReviewContext {
   readonly repoPath: string;
   readonly sourceRepo: string;
@@ -346,6 +357,11 @@ function warnAboutStaleEntries(
   outDir: string,
   sourceRepo: string,
 ): void {
+  // Local scans emit placeholder URLs keyed only by the directory basename, so two
+  // unrelated local repos can share one URL — ownership is unprovable; stay quiet.
+  if (sourceRepo.startsWith("local/")) {
+    return;
+  }
   const current = new Set(entries.map((e) => `${e.name}.json`));
   const expectedUrl = sourceRepoUrl(sourceRepo);
   const stale = readdirSync(outDir)

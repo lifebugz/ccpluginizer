@@ -1,12 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as v from "valibot";
-import type { BackendKind } from "../detector/partition.ts";
+import type { BackendKind, GrouperRun } from "../detector/partition.ts";
 import { RawGroupSchema, RawGroupsSchema, type RawGroup } from "../schemas/rawGroups.ts";
+import { readJsonFile } from "../detector/fsWalk.ts";
 import type { SkillMeta } from "../detector/skillMeta.ts";
 
 /** Cap a backend's stdout so a runaway/garbage response cannot exhaust memory. */
@@ -26,15 +27,8 @@ export type SpawnRun = (
   options: { input?: string; maxBuffer: number; timeout: number },
 ) => SpawnResult | Promise<SpawnResult>;
 
-/** One backend invocation: parsed groups plus a commit hook for gate-passing results. */
-export interface BackendRun {
-  readonly groups: RawGroup[];
-  /** Persists the result (cache write); the partition orchestrator calls it iff the gate passes. */
-  readonly commit?: () => void;
-}
-
-/** A backend's grouping function — the resolved backend IS the kind, so it returns raw groups. */
-export type BackendGroupFn = (skills: readonly SkillMeta[]) => Promise<BackendRun>;
+/** A backend's grouping function: it returns the full GrouperRun (it knows its kind). */
+export type BackendGroupFn = (skills: readonly SkillMeta[]) => Promise<GrouperRun>;
 
 export interface ResolvedGrouper {
   readonly fn: BackendGroupFn;
@@ -245,9 +239,12 @@ function spawnGroupRun(
         clearTimeout(t);
       }
       // Reap any process-group survivors (a grandchild holding the inherited stdout
-      // pipe) and release our end of the pipe; on a clean exit the group is already
-      // gone and the kill is a caught ESRCH no-op.
-      killTree("SIGKILL");
+      // pipe) and release our end of the pipe. On POSIX a kill to a dead group is a
+      // caught ESRCH no-op; on Windows the reap spawns taskkill, so a clean close
+      // (no timeout/overflow/error) skips it instead of paying a subprocess per run.
+      if (!win || timedOut || overflowed || result.error !== undefined) {
+        killTree("SIGKILL");
+      }
       child.stdout?.destroy();
       cleanupForwarders();
       resolve(result);
@@ -342,6 +339,7 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
         : undefined;
     return {
       fn: makeCachedGrouper(
+        "subprocess",
         // Namespaced: --llm-cmd "claude" (a shell command) must not share cache
         // entries with the built-in claude backend (direct argv invocation).
         `cmd:${cmd}`,
@@ -364,14 +362,16 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
     // npm-installed Windows shims (.cmd/.bat) cannot be spawned directly
     // (Node >= 20 throws EINVAL); route them through cmd.exe like a shell would.
     const winShim = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(claude);
+    // Outer quote wrap mirrors Node's shell:true /S /C handling, protecting a
+    // claude path that itself contains spaces.
     const [cmd, cmdArgs] = winShim
-      ? (["cmd", ["/d", "/s", "/c", `"${claude}" -p`]] as const)
+      ? (["cmd", ["/d", "/s", "/c", `""${claude}" -p"`]] as const)
       : ([claude, ["-p"]] as const);
     return {
       // The prompt goes on stdin, not argv: one line per skill at hundreds of skills
       // exceeds the OS per-argument limit (E2BIG), which would silently disable the
       // claude backend on exactly the repos that most need the rescue.
-      fn: makeCachedGrouper("claude-cli", cacheDirFn, (prompt) =>
+      fn: makeCachedGrouper("claude", "claude-cli", cacheDirFn, (prompt) =>
         run(cmd, cmdArgs, {
           input: prompt,
           maxBuffer: MAX_BUFFER_BYTES,
@@ -388,38 +388,42 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
 
 /** The shared backend pipeline: cache read → invoke → parse → commit-on-acceptance. */
 function makeCachedGrouper(
+  kind: BackendKind,
   cacheId: string,
   cacheDir: () => string,
   invoke: (prompt: string) => SpawnResult | Promise<SpawnResult>,
   onRun?: () => void,
 ): BackendGroupFn {
-  return async (skills: readonly SkillMeta[]): Promise<BackendRun> => {
+  return async (skills: readonly SkillMeta[]): Promise<GrouperRun> => {
+    // The cache dir is created/verified once per invocation, shared by read and commit.
+    const dir = ensureCacheDir(cacheDir);
     const cacheKey = hashSkills(skills, cacheId);
-    const cached = readCache(cacheDir, cacheKey);
+    const cached = dir === null ? null : readCacheFile(join(dir, `${cacheKey}.json`));
     if (cached !== null) {
-      return { groups: cached }; // already gate-passing when written — no re-commit
+      return { kind, groups: cached }; // already gate-passing when written — no re-commit
     }
     onRun?.();
     const result = await invoke(buildClusterPrompt(skills));
     const stdout = result.stdout;
     if (isSpawnFailure(result) || stdout === null) {
-      return { groups: [] };
+      return { kind, groups: [] };
     }
     const validDirs = new Set(skills.map((s) => s.dir));
     // partitionSkills re-validates and gates whatever crosses the GroupSkillsFn seam
     // (it must — the seam accepts arbitrary BYO functions); the filtering here only
     // keeps the cached artifact and the empty-output signal clean.
     const groups = parseClusterResponse(stdout, validDirs) ?? [];
-    if (groups.length === 0) {
-      return { groups };
+    if (groups.length === 0 || dir === null) {
+      return { kind, groups };
     }
     // Caching is committed by the orchestrator iff the acceptance gate passes: a
     // parseable-but-rejected response (e.g. one giant group) replayed from cache
     // would permanently disable the stochastic LLM rescue for this skill set.
     return {
+      kind,
       groups,
       commit: (): void => {
-        writeCache(cacheDir, cacheKey, groups);
+        writeCacheFile(join(dir, `${cacheKey}.json`), groups);
       },
     };
   };
@@ -487,29 +491,17 @@ function ensureCacheDir(dirFn: () => string): string | null {
   return dir;
 }
 
-function readCache(dirFn: () => string, key: string): RawGroup[] | null {
-  const dir = ensureCacheDir(dirFn);
-  if (dir === null) {
-    return null;
-  }
-  const file = join(dir, `${key}.json`);
-  if (!existsSync(file)) {
-    return null;
-  }
+function readCacheFile(file: string): RawGroup[] | null {
   try {
-    return validateRawGroups(JSON.parse(readFileSync(file, "utf8")));
+    return validateRawGroups(readJsonFile(file)); // missing/unreadable/invalid -> null
   } catch {
     return null;
   }
 }
 
-function writeCache(dirFn: () => string, key: string, groups: RawGroup[]): void {
-  const dir = ensureCacheDir(dirFn);
-  if (dir === null) {
-    return;
-  }
+function writeCacheFile(file: string, groups: RawGroup[]): void {
   try {
-    writeFileSync(join(dir, `${key}.json`), JSON.stringify(groups), "utf8");
+    writeFileSync(file, JSON.stringify(groups), "utf8");
   } catch {
     // best-effort cache; ignore write failures
   }

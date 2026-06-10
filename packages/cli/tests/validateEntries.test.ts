@@ -88,6 +88,19 @@ describe("collectEntries: empty artifacts are rejected", () => {
     writeFileSync(file, "[]\n");
     expect(() => collectEntries(file)).toThrow(/No entries found/);
   });
+
+  test("a [] file hiding among valid files in a directory still fails loudly", () => {
+    const tmp = tempDir("ccp-emptyamong-");
+    writeFileSync(join(tmp, "good.json"), JSON.stringify({ name: "good", source: { source: "github", repo: "a/b" } }));
+    writeFileSync(join(tmp, "truncated.json"), "[]\n");
+    expect(() => collectEntries(tmp)).toThrow(/No entries found in: truncated\.json/);
+  });
+
+  test("allowEmptyDir tolerates a zero-file directory; the default still throws", () => {
+    const tmp = tempDir("ccp-emptydir2-");
+    expect(() => collectEntries(tmp)).toThrow(/No entry JSON files/);
+    expect(collectEntries(tmp, { allowEmptyDir: true }).items).toEqual([]);
+  });
 });
 
 describe("validateEntries: error provenance", () => {

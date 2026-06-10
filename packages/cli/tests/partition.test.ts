@@ -310,6 +310,8 @@ describe("partitionSkills: marker staleness and path conventions", () => {
     });
     expect(strategyOf(provenance)).toBe("marker");
     expect(groups?.length).toBe(2);
-    expect(warnings).toEqual([]);
+    // Name-only resolution works but is surfaced, so a coincidental basename match
+    // can never silently mis-assign a skill.
+    expect(warnings.some((w) => w.includes("by directory name only"))).toBe(true);
   });
 });

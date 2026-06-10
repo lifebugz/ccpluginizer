@@ -195,3 +195,20 @@ describe("resolveSourceLayout: anchored configs under a plugin root", () => {
     expect(resolveSourceLayout(tmp).mcp).toBeNull();
   });
 });
+
+describe("resolveSourceLayout: cross-parent symlink aliasing", () => {
+  test("an alias in an earlier-walked parent does not steal the real container", () => {
+    const tmp = tempDir("ccp-crossalias-");
+    for (const n of ["alpha", "beta", "gamma"]) {
+      mkdirSync(join(tmp, "skills", n), { recursive: true });
+      writeFileSync(join(tmp, "skills", n, "SKILL.md"), `---\ndescription: ${n}.\n---\n`);
+    }
+    // docs/ is walked before skills/ in DFS order; without global symlink deferral
+    // the alias would register the inode first and win container resolution.
+    mkdirSync(join(tmp, "docs"), { recursive: true });
+    symlinkSync(join(tmp, "skills"), join(tmp, "docs", "skills-link"));
+    const resolver = createLayoutResolver(tmp);
+    expect(resolver.skillsContainer?.relPath).toBe("skills"); // the real path wins
+    expect(resolver.skillDirsOutsideContainer).toBe(0);
+  });
+});

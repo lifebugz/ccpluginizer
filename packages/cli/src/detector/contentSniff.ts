@@ -1,32 +1,25 @@
 import { dirname, relative } from "node:path";
-import * as v from "valibot";
-import { SkillFrontmatterSchema } from "../schemas/frontmatter.ts";
-import { walkTree, type DirLister } from "./fsWalk.ts";
-import { isAgentFile, readFrontmatter, type FrontmatterReader } from "./frontmatterIo.ts";
+import { walkTree } from "./fsWalk.ts";
+import { isAgentFile, isSkillFile, readFrontmatter, type FrontmatterReader } from "./frontmatterIo.ts";
+import type { ScanCaches } from "./caches.ts";
 import type { Finding } from "./types.ts";
 
 // Sniffing is the last-resort detection layer, so it looks everywhere except
 // dependency/VCS internals (unlike sourceLayout, it must see tests/examples).
 const SNIFF_SKIP_DIRS = new Set(["node_modules", ".git"]);
 
-export interface SniffCaches {
-  readonly list?: DirLister;
-  readonly readFrontmatter?: FrontmatterReader;
-}
-
-/** Pass the layout resolver's caches so a scan walks and parses each file once. */
-export function detectContentSniff(repoRoot: string, caches: SniffCaches = {}): readonly Finding[] {
+/** Pass the scan's caches so a scan walks and parses each file once. */
+export function detectContentSniff(repoRoot: string, caches: ScanCaches = {}): readonly Finding[] {
   const skillDirs = new Set<string>();
   const agentFiles = new Set<string>();
-  const readFm = caches.readFrontmatter ?? readFrontmatter;
+  const readFm: FrontmatterReader = caches.readFrontmatter ?? readFrontmatter;
 
   walkTree(repoRoot, {
     skipDirs: SNIFF_SKIP_DIRS,
     ...(caches.list !== undefined ? { list: caches.list } : {}),
     onFile: (filePath) => {
       if (filePath.endsWith("SKILL.md")) {
-        const fm = readFm(filePath);
-        if (fm !== null && v.safeParse(SkillFrontmatterSchema, fm).success) {
+        if (isSkillFile(filePath, readFm)) {
           skillDirs.add(dirname(filePath));
         }
         return;

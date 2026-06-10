@@ -25,10 +25,8 @@ const tombstoned = new Set(
 // Same loader + validator as `ccpluginizer validate`: flattens array-shaped entry
 // files (a split scan emits several entries per file), enforces cross-entry name
 // uniqueness, and names the offending file in every error. An entries/ dir with no
-// files (e.g. the last entry just moved to tombstones/) builds an empty catalog —
-// collectEntries' strict-empty guard exists for `validate <wrong-path>`, not here.
-const entryFiles = readdirSync(ENTRIES_DIR).filter((f) => f.endsWith(".json"));
-const { items, sources } = entryFiles.length === 0 ? { items: [], sources: [] } : collectEntries(ENTRIES_DIR);
+// files (e.g. the last entry just moved to tombstones/) builds an empty catalog.
+const { items, sources } = collectEntries(ENTRIES_DIR, { allowEmptyDir: true });
 const check = validateEntries(items, sources);
 if (!check.ok) {
   console.error("Invalid entries:");

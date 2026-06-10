@@ -295,6 +295,8 @@ interface MarkerMatch {
   readonly unmatched: string[];
   /** Marker paths whose skill was already claimed by an earlier group (first wins). */
   readonly duplicates: string[];
+  /** Marker paths resolved only by their final segment (exact path did not match). */
+  readonly fuzzyMatched: string[];
   /** Skills the marker does not mention. */
   readonly leftover: SkillMeta[];
 }
@@ -312,14 +314,19 @@ function matchMarkerGroups(
   const out: SkillGroup[] = [];
   const unmatched: string[] = [];
   const duplicates: string[] = [];
+  const fuzzyMatched: string[] = [];
   for (const mg of markerGroups) {
     const gs: SkillMeta[] = [];
     for (const p of mg.skills) {
       const norm = normalizePath(p);
-      const s = byPath.get(norm) ?? byDir.get(basename(norm));
+      const exact = byPath.get(norm);
+      const s = exact ?? byDir.get(basename(norm));
       if (s === undefined) {
         unmatched.push(p);
         continue;
+      }
+      if (exact === undefined) {
+        fuzzyMatched.push(p); // resolved by directory name only — surfaced as a warning
       }
       if (assigned.has(s.dir)) {
         duplicates.push(p);
@@ -332,7 +339,7 @@ function matchMarkerGroups(
       out.push({ slug: slugify(mg.slug), skills: gs });
     }
   }
-  return { groups: out, unmatched, duplicates, leftover: skills.filter((s) => !assigned.has(s.dir)) };
+  return { groups: out, unmatched, duplicates, fuzzyMatched, leftover: skills.filter((s) => !assigned.has(s.dir)) };
 }
 
 function normalizePath(p: string): string {
@@ -389,7 +396,7 @@ export async function partitionSkills(
 
   // A committed marker grouping wins verbatim — but only when it actually matches.
   if (options.markerGroups !== undefined && options.markerGroups.length > 0) {
-    const { groups: matched, unmatched, duplicates, leftover } = matchMarkerGroups(skills, options.markerGroups);
+    const { groups: matched, unmatched, duplicates, fuzzyMatched, leftover } = matchMarkerGroups(skills, options.markerGroups);
     if (matched.length === 0) {
       // Fully stale marker: honoring it would emit a single bogus "misc" slice
       // announced as "via committed marker" — ignore it and fall through to the
@@ -402,6 +409,12 @@ export async function partitionSkills(
         const preview = unmatched.slice(0, 3).join(", ") + (unmatched.length > 3 ? ", …" : "");
         warnings.push(
           `${String(unmatched.length)} path(s) in .ccpluginizer.json "groups" match no skill directory (${preview}); re-run scan --write-marker to refresh the frozen split.`,
+        );
+      }
+      if (fuzzyMatched.length > 0) {
+        const preview = fuzzyMatched.slice(0, 3).join(", ") + (fuzzyMatched.length > 3 ? ", …" : "");
+        warnings.push(
+          `${String(fuzzyMatched.length)} path(s) in .ccpluginizer.json "groups" matched a skill by directory name only (${preview}); update the marker paths or re-run scan --write-marker.`,
         );
       }
       if (duplicates.length > 0) {

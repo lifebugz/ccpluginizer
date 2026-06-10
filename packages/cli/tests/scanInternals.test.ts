@@ -15,7 +15,7 @@ import { captureStderr as capture } from "./helpers.ts";
 const FIXTURES = join(import.meta.dirname, "fixtures");
 
 const SUBPROCESS: ResolvedGrouper = {
-  fn: () => Promise.resolve({ groups: [] }),
+  fn: () => Promise.resolve({ kind: "subprocess", groups: [] }),
   backendId: "x",
   kind: "subprocess",
 };
@@ -87,30 +87,30 @@ describe("resolveLlmConfig", () => {
 });
 
 describe("printSplitNotice taxonomy", () => {
-  test("marker -> committed-marker line, no LLM/deterministic qualifier", () => {
-    const out = capture(() => { printSplitNotice(splitResult({ kind: "marker" })); });
+  test("marker -> committed-marker line, no LLM/deterministic qualifier", async () => {
+    const out = await capture(() => { printSplitNotice(splitResult({ kind: "marker" })); });
     expect(out).toContain("via committed marker (.ccpluginizer.json)");
     expect(out).not.toMatch(/LLM backend/);
   });
 
-  test("llm result names the backend", () => {
-    expect(capture(() => { printSplitNotice(splitResult({ kind: "llm", backend: "subprocess" })); }))
+  test("llm result names the backend", async () => {
+    expect(await capture(() => { printSplitNotice(splitResult({ kind: "llm", backend: "subprocess" })); }))
       .toContain("via subprocess clustering");
-    expect(capture(() => { printSplitNotice(splitResult({ kind: "llm", backend: "claude" })); }))
+    expect(await capture(() => { printSplitNotice(splitResult({ kind: "llm", backend: "claude" })); }))
       .toContain("via claude clustering");
   });
 
-  test("deterministic after a failed LLM step reports the exact reason", () => {
-    expect(capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: NO_OUTPUT })); }))
+  test("deterministic after a failed LLM step reports the exact reason", async () => {
+    expect(await capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: NO_OUTPUT })); }))
       .toContain("(the LLM backend was unreachable or produced no output)");
-    expect(capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: GATE_REJECTED })); }))
+    expect(await capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: GATE_REJECTED })); }))
       .toContain("(the LLM grouping was rejected by the acceptance gate)");
-    expect(capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: NO_BACKEND })); }))
+    expect(await capture(() => { printSplitNotice(splitResult({ kind: "deterministic", strategy: "name-prefix", llmFailure: NO_BACKEND })); }))
       .toContain("(no LLM backend found; set --llm-cmd or install the `claude` CLI)");
   });
 
-  test("deterministic with the LLM never invoked -> plain notice, no LLM mention", () => {
-    const out = capture(() => { printSplitNotice(splitResult()); });
+  test("deterministic with the LLM never invoked -> plain notice, no LLM mention", async () => {
+    const out = await capture(() => { printSplitNotice(splitResult()); });
     expect(out).toContain("via metadata clustering");
     expect(out).not.toMatch(/LLM/);
     expect(out).not.toMatch(/clustering \(/); // no parenthesized fallback reason
@@ -118,20 +118,20 @@ describe("printSplitNotice taxonomy", () => {
 });
 
 describe("printNoSplitNotice", () => {
-  test("gate-rejected LLM grouping -> exact phrasing, names the cluster", () => {
-    expect(capture(() => { printNoSplitNotice("auto-llm", GATE_REJECTED); }))
+  test("gate-rejected LLM grouping -> exact phrasing, names the cluster", async () => {
+    expect(await capture(() => { printNoSplitNotice("auto-llm", GATE_REJECTED); }))
       .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM grouping was rejected by the acceptance gate, and no clean deterministic partition; emitting a single entry.");
   });
-  test("backend ran but produced nothing -> unreachable phrasing", () => {
-    expect(capture(() => { printNoSplitNotice("auto-llm", NO_OUTPUT); }))
+  test("backend ran but produced nothing -> unreachable phrasing", async () => {
+    expect(await capture(() => { printNoSplitNotice("auto-llm", NO_OUTPUT); }))
       .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM backend was unreachable or produced no output, and no clean deterministic partition; emitting a single entry.");
   });
-  test("no backend -> the actionable hint, same as the split-notice variant", () => {
-    expect(capture(() => { printNoSplitNotice("llm", NO_BACKEND); }))
+  test("no backend -> the actionable hint, same as the split-notice variant", async () => {
+    expect(await capture(() => { printNoSplitNotice("llm", NO_BACKEND); }))
       .toBe("ccpluginizer: --cluster=llm produced no split — no LLM backend found; set --llm-cmd or install the `claude` CLI, and no clean deterministic partition; emitting a single entry.");
   });
-  test("a forced deterministic strategy that found no partition explains itself too", () => {
-    expect(capture(() => { printNoSplitNotice("metadata", undefined); }))
+  test("a forced deterministic strategy that found no partition explains itself too", async () => {
+    expect(await capture(() => { printNoSplitNotice("metadata", undefined); }))
       .toBe("ccpluginizer: --cluster=metadata produced no split — no clean deterministic partition; emitting a single entry.");
   });
 });
@@ -152,7 +152,7 @@ describe("makeLazyGrouper", () => {
   test("wraps backend output in the GrouperRun contract (kind + groups + commit)", async () => {
     let committed = false;
     const backend: ResolvedGrouper = {
-      fn: () => Promise.resolve({ groups: [{ slug: "a", members: ["x"] }], commit: () => { committed = true; } }),
+      fn: () => Promise.resolve({ kind: "subprocess" as const, groups: [{ slug: "a", members: ["x"] }], commit: () => { committed = true; } }),
       backendId: "b",
       kind: "subprocess",
     };

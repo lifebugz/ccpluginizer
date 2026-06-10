@@ -7,7 +7,7 @@ import {
   type SpawnRun,
 } from "../src/commands/llmGrouper.ts";
 import type { SkillMeta } from "../src/detector/skillMeta.ts";
-import { captureStderrAsync, mk, tempDir } from "./helpers.ts";
+import { captureStderr, mk, tempDir } from "./helpers.ts";
 import { chmodSync, readdirSync } from "node:fs";
 
 describe("validateRawGroups (disk-cache shape guard)", () => {
@@ -169,7 +169,7 @@ describe("subprocess backend: execution, failure, provenance, cache", () => {
   });
 
   test("emits the provenance notice iff fromEnv", async () => {
-    const fromEnvOut = await captureStderrAsync(async () => {
+    const fromEnvOut = await captureStderr(async () => {
       const fromEnv = resolveGrouper(
         { cmd: "secret-cmd", cmdFromEnv: true, timeoutMs: 1000 },
         { run: fakeRun(ok(VALID_JSON)).run, cacheDir: () => cacheRoot },
@@ -178,7 +178,7 @@ describe("subprocess backend: execution, failure, provenance, cache", () => {
     });
     expect(fromEnvOut).toContain("secret-cmd");
 
-    const fromFlagOut = await captureStderrAsync(async () => {
+    const fromFlagOut = await captureStderr(async () => {
       const fromFlag = resolveGrouper(
         { cmd: "secret-cmd", cmdFromEnv: false, timeoutMs: 1000 },
         { run: fakeRun(ok(VALID_JSON)).run, cacheDir: () => cacheRoot },

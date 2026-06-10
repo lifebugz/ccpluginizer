@@ -117,19 +117,8 @@ export function makeFlatSkillsRepo(products: Record<string, number>): string {
   return root;
 }
 
-/** Capture everything a synchronous call writes via console.error. */
-export function captureStderr(fn: () => void): string {
-  const spy = spyOn(console, "error").mockImplementation(() => undefined);
-  try {
-    fn();
-    return spy.mock.calls.map((c) => c.map((a) => String(a)).join(" ")).join("\n");
-  } finally {
-    spy.mockRestore();
-  }
-}
-
-/** Async variant of captureStderr for awaited calls. */
-export async function captureStderrAsync(fn: () => Promise<unknown>): Promise<string> {
+/** Capture everything a call (sync or awaited) writes via console.error. */
+export async function captureStderr(fn: () => unknown): Promise<string> {
   const spy = spyOn(console, "error").mockImplementation(() => undefined);
   try {
     await fn();
