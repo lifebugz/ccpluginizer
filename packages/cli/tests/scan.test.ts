@@ -379,3 +379,31 @@ describe("scan CLI: sixth-wave regressions", () => {
     expect((parsed as unknown[]).length).toBe(1);
   }, 30_000);
 });
+
+describe("scan CLI: --write-marker round-trip is byte-identical (regression fence)", () => {
+  test("re-scanning through the frozen marker reproduces the split's stdout exactly", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
+
+    // 1. A clean deterministic split — the stdout the round-trip must reproduce.
+    const first = await runScan([root, "--cluster=metadata", "--min-skills=2"]);
+    expect(first.code).toBe(0);
+    expect(Array.isArray(JSON.parse(first.stdout))).toBe(true);
+
+    // 2. Freeze that grouping into .ccpluginizer.json via the flag under test.
+    const frozen = await runScan([root, "--cluster=metadata", "--min-skills=2", "--write-marker"]);
+    expect(frozen.code).toBe(0);
+    expect(existsSync(join(root, ".ccpluginizer.json"))).toBe(true);
+
+    // 3. Re-scan with NO --cluster flag: the committed marker must drive the grouping.
+    const second = await runScan([root, "--min-skills=2"]);
+    expect(second.code).toBe(0);
+
+    // Entries (stdout) are byte-identical; provenance differs only on stderr.
+    expect(second.stdout).toBe(first.stdout);
+    expect(second.stderr).toMatch(/via committed marker \(\.ccpluginizer\.json\)/);
+    // A just-written marker exact-matches every skill: no staleness/fuzzy warnings.
+    expect(second.stderr).not.toMatch(
+      /ignoring the frozen split|match no skill directory|by directory name only|more than one group|placed in a "misc" slice/,
+    );
+  }, 30_000);
+});

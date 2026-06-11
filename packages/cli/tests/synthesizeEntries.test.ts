@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { synthesizeEntry, synthesizeEntries } from "../src/detector/synthesize.ts";
+import { serializeMarkerDraft, synthesizeEntry, synthesizeEntries } from "../src/detector/synthesize.ts";
 import { makeFlatSkillsRepo, makeNestedPlugin } from "./helpers.ts";
 import type { MarketplaceEntry } from "../src/schemas/marketplaceEntry.ts";
 
@@ -471,5 +471,46 @@ describe("synthesizeEntries: sixth-wave regressions", () => {
       strategy: "metadata",
       llmFailure: { step: "errored" },
     });
+  });
+});
+
+describe("synthesizeEntries: --write-marker round-trip (regression fence)", () => {
+  test("freezing a split then re-scanning reproduces it via the marker, byte-for-byte and warning-free", async () => {
+    const root = makeNestedPlugin({ products: { messaging: 4, voice: 4 } });
+
+    // Scan 1: a clean deterministic split — the bytes the round-trip must reproduce.
+    const first = await synthesizeEntries({
+      repoRoot: root,
+      sourceRepo: "test/telnyx",
+      strategy: "metadata",
+      minSkillsToSplit: 2,
+    });
+    expect(first.provenance.kind).toBe("deterministic");
+    expect(first.marker).not.toBeNull();
+    if (first.marker === null) return; // a gate regression surfaces here, not as an NPE below
+    expect(first.warnings).toEqual([]);
+
+    // Freeze the grouping exactly as `scan --write-marker` does, then commit it.
+    const frozen = serializeMarkerDraft(first.marker, null);
+    writeFileSync(join(root, ".ccpluginizer.json"), JSON.stringify(frozen, null, 2) + "\n");
+
+    // Scan 2: no strategy — the committed marker must now drive the grouping verbatim.
+    const second = await synthesizeEntries({
+      repoRoot: root,
+      sourceRepo: "test/telnyx",
+      minSkillsToSplit: 2,
+    });
+
+    // The flip deterministic -> marker proves the marker drove (not a re-derived
+    // deterministic split that coincidentally matched).
+    expect(second.provenance.kind).toBe("marker");
+    // An empty warnings array specifically pins the EXACT-match round-trip: a marker
+    // written with the wrong path convention would still match, but via the basename
+    // fuzzy fallback, which fires a "matched by directory name only" warning.
+    expect(second.warnings).toEqual([]);
+    // Entries are structurally equal AND serialize to identical bytes (entry key order
+    // is part of the published-bytes contract).
+    expect(second.entries).toEqual(first.entries);
+    expect(JSON.stringify(second.entries)).toBe(JSON.stringify(first.entries));
   });
 });

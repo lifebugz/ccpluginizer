@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SkillMeta } from "../src/detector/skillMeta.ts";
 import {
+  partitionByDirectory,
   partitionByMetadata,
   partitionByNamePrefix,
   partitionSkills,
@@ -313,5 +314,77 @@ describe("partitionSkills: marker staleness and path conventions", () => {
     // Name-only resolution works but is surfaced, so a coincidental basename match
     // can never silently mis-assign a skill.
     expect(warnings.some((w) => w.includes("by directory name only"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Order-independence regression fence
+// ---------------------------------------------------------------------------
+
+/** A canonical signature of a grouping: group order AND within-group skill order. */
+function fingerprint(groups: Grouping): string {
+  return JSON.stringify(groups.map((g) => [g.slug, g.skills.map((s) => s.dir)]));
+}
+
+/**
+ * Deterministic permutation without Math.random, so a failure reproduces exactly.
+ * Decorate-sort-undecorate with a Park–Miller LCG key: no array indexing (keeps
+ * `noUncheckedIndexedAccess` happy), no bitwise ops, and distinct keys across a
+ * 144-element input over the generator's 2^31 period.
+ */
+function seededShuffle<T>(arr: readonly T[], seed: number): T[] {
+  let s = seed % 2147483647;
+  if (s <= 0) {
+    s += 2147483646;
+  }
+  return arr
+    .map((value) => {
+      s = (s * 16807) % 2147483647;
+      return { value, key: s };
+    })
+    .sort((a, b) => a.key - b.key)
+    .map((decorated) => decorated.value);
+}
+
+describe("partition: deterministic strategies are order-independent (regression fence)", () => {
+  // Before finalizeGroups, grouping order is genuinely input-order-dependent (Map
+  // first-encounter order in groupByKey / collapseByLeadingSegment). The invariant
+  // below is upheld solely by finalizeGroups' two canonical sorts (groups by slug,
+  // skills by dir); deleting either silently reintroduces order-dependence, so only
+  // a permutation sweep fences it.
+  const strategies: readonly [string, (s: readonly SkillMeta[]) => Grouping | null][] = [
+    ["metadata", partitionByMetadata],
+    ["directory", partitionByDirectory],
+    ["name-prefix", partitionByNamePrefix],
+  ];
+
+  for (const [name, partition] of strategies) {
+    test(`${name}: 20 input permutations collapse to one identical grouping`, () => {
+      const base = telnyxLike();
+      const canonical = partition(base);
+      expect(canonical).not.toBeNull(); // an always-null fixture would pass vacuously
+      if (canonical === null) return;
+      const want = fingerprint(canonical);
+      for (let seed = 1; seed <= 20; seed++) {
+        const got = partition(seededShuffle(base, seed));
+        expect(got).not.toBeNull();
+        if (got === null) return;
+        expect(fingerprint(got)).toBe(want);
+      }
+    });
+  }
+
+  test("partitionSkills(auto) inherits the same permutation-invariance end to end", async () => {
+    const base = telnyxLike();
+    const { groups: canonical } = await partitionSkills(base, { strategy: "auto" });
+    expect(canonical).not.toBeNull();
+    if (canonical === null) return;
+    const want = fingerprint(canonical);
+    for (let seed = 21; seed <= 40; seed++) {
+      const { groups } = await partitionSkills(seededShuffle(base, seed), { strategy: "auto" });
+      expect(groups).not.toBeNull();
+      if (groups === null) return;
+      expect(fingerprint(groups)).toBe(want);
+    }
   });
 });
