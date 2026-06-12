@@ -1,21 +1,20 @@
 import { Crust } from "@crustjs/core";
-import { readFileSync } from "node:fs";
-import * as v from "valibot";
-import { MarketplaceEntrySchema } from "../schemas/marketplaceEntry.ts";
+import { collectEntries, validateEntries } from "../detector/validateEntries.ts";
 
 export const validateCommand = new Crust("validate")
-  .meta({ description: "Validate a marketplace entry JSON file against the schema" })
-  .args([{ name: "entryFile", type: "string", required: true, description: "Path to entry JSON file" }] as const)
+  .meta({ description: "Validate marketplace entries against the schema (file, JSON array, or directory)" })
+  .args([
+    { name: "entryFile", type: "string", required: true, description: "Path to an entry JSON file, a JSON array, or a directory of entries" },
+  ] as const)
   .run(({ args }): void => {
-    const raw = readFileSync(args.entryFile, "utf8");
-    const parsed: unknown = JSON.parse(raw) as unknown;
-    const result = v.safeParse(MarketplaceEntrySchema, parsed);
-    if (!result.success) {
+    const { items, sources } = collectEntries(args.entryFile);
+    const result = validateEntries(items, sources);
+    if (!result.ok) {
       console.error("Validation failed:");
-      for (const issue of result.issues) {
-        console.error(JSON.stringify(issue));
+      for (const error of result.errors) {
+        console.error(`  - ${error}`);
       }
       process.exit(1);
     }
-    console.log("OK");
+    console.log(`OK (${String(items.length)} ${items.length === 1 ? "entry" : "entries"})`);
   });

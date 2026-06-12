@@ -40,6 +40,31 @@ describe("MarkerFileSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  test("accepts a frozen split: groups + core + umbrella", () => {
+    const result = v.safeParse(MarkerFileSchema, {
+      name: "team-telnyx-ai",
+      core: true,
+      umbrella: false,
+      groups: [
+        { slug: "messaging", skills: ["./telnyx-messaging-python/", "./telnyx-messaging-go/"] },
+        { slug: "voice", skills: ["./telnyx-voice-python/"] },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.groups?.length).toBe(2);
+      expect(result.output.groups?.[0]?.slug).toBe("messaging");
+    }
+  });
+
+  test("rejects group skills paths without ./ prefix", () => {
+    const result = v.safeParse(MarkerFileSchema, {
+      name: "x",
+      groups: [{ slug: "messaging", skills: ["telnyx-messaging-python/"] }],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 import { NonStandardManifestSchema } from "../src/schemas/nonStandardManifest.ts";
@@ -100,9 +125,80 @@ describe("SkillFrontmatterSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  test("a flow-sequence description ([WIP]) is coerced, not dropped", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, { description: ["WIP"] });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.description).toBe("WIP");
+    }
+  });
+
   test("rejects frontmatter without description (it's the marker for skill-shape)", () => {
     const result = v.safeParse(SkillFrontmatterSchema, { name: "foo" });
     expect(result.success).toBe(false);
+  });
+
+  test("accepts nested metadata plus extra fields (tags, category) without failing", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, {
+      name: "telnyx-10dlc-curl",
+      description: "10DLC brand and campaign registration",
+      metadata: { author: "telnyx", product: "10dlc", language: "curl" },
+      tags: ["messaging", "compliance"],
+      category: "messaging",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.metadata?.product).toBe("10dlc");
+    }
+  });
+
+  test("coerces a numeric metadata.product / description to string (lenient, no skill drop)", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, {
+      description: 2024,
+      metadata: { product: 10 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.description).toBe("2024");
+      expect(result.output.metadata?.product).toBe("10");
+    }
+  });
+
+  test("ignores unknown metadata keys (generated_by, profile) without failing", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, {
+      description: "x",
+      metadata: { product: "voice", generated_by: "telnyx-ext-skills-generator", profile: "northstar-v2" },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.metadata?.product).toBe("voice");
+    }
+  });
+
+  test("does not drop a skill for malformed advisory fields (metadata scalar, tags map, null product)", () => {
+    // The zero-dep YAML parser can yield these shapes (e.g. a deeply-nested or
+    // block-scalar `metadata.product` becomes null); they are clustering hints, so a
+    // bad shape must be ignored — never drop the skill, which has a valid description.
+    const scalarMeta = v.safeParse(SkillFrontmatterSchema, { description: "x", metadata: "telnyx" });
+    expect(scalarMeta.success).toBe(true);
+    expect(scalarMeta.success && scalarMeta.output.metadata?.product).toBeUndefined();
+
+    const nullProduct = v.safeParse(SkillFrontmatterSchema, { description: "x", metadata: { product: null } });
+    expect(nullProduct.success).toBe(true);
+
+    const tagsMap = v.safeParse(SkillFrontmatterSchema, { description: "x", tags: { a: "b" } });
+    expect(tagsMap.success).toBe(true);
+  });
+
+  test("keeps valid metadata.product even when a sibling key is malformed", () => {
+    const result = v.safeParse(SkillFrontmatterSchema, {
+      description: "x",
+      metadata: { product: "voice", language: null },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.metadata?.product).toBe("voice");
+    }
   });
 });
 
@@ -120,6 +216,15 @@ describe("AgentFrontmatterSchema", () => {
       description: "Reviews code",
     });
     expect(result.success).toBe(false);
+  });
+
+  test("accepts a comma-separated string tools value (Claude Code's documented format)", () => {
+    const result = v.safeParse(AgentFrontmatterSchema, {
+      name: "code-reviewer",
+      description: "Reviews code",
+      tools: "Read, Grep, Bash",
+    });
+    expect(result.success).toBe(true);
   });
 });
 
@@ -163,6 +268,37 @@ describe("MarketplaceEntrySchema", () => {
         url: "https://github.com/owner/monorepo.git",
         path: "tools/myplugin",
       },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts bare-string dependencies (the proven slice→core wiring)", () => {
+    const result = v.safeParse(MarketplaceEntrySchema, {
+      name: "team-telnyx-ai-messaging",
+      source: { source: "git-subdir", url: "https://github.com/team-telnyx/ai.git", path: "providers/claude/plugin/skills" },
+      skills: ["./telnyx-messaging-python/"],
+      dependencies: ["team-telnyx-ai-core"],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.dependencies).toEqual(["team-telnyx-ai-core"]);
+    }
+  });
+
+  test("accepts object-form dependencies with optional version", () => {
+    const result = v.safeParse(MarketplaceEntrySchema, {
+      name: "x",
+      source: { source: "github", repo: "a/b" },
+      dependencies: [{ name: "core" }, { name: "other", version: "^1.0.0" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts inline mcpServers object for a zero-skill core entry", () => {
+    const result = v.safeParse(MarketplaceEntrySchema, {
+      name: "team-telnyx-ai-core",
+      source: { source: "git-subdir", url: "https://github.com/team-telnyx/ai.git", path: "providers/claude/plugin/agents" },
+      mcpServers: { telnyx: { command: "npx", args: ["-y", "@telnyx/mcp"] } },
     });
     expect(result.success).toBe(true);
   });

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-import { readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import * as v from "valibot";
-import { MarketplaceEntrySchema } from "../packages/cli/src/schemas/marketplaceEntry.ts";
+import { collectEntries, validateEntries } from "../packages/cli/src/detector/validateEntries.ts";
+import { byCodeUnit } from "../packages/cli/src/detector/slugify.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const ENTRIES_DIR = join(ROOT, "entries");
@@ -22,20 +22,23 @@ const tombstoned = new Set(
     .map((f) => f.replace(".json", "")),
 );
 
-const entries = readdirSync(ENTRIES_DIR)
-  .filter((f) => f.endsWith(".json"))
-  .map((f) => {
-    const raw = readFileSync(join(ENTRIES_DIR, f), "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    const result = v.safeParse(MarketplaceEntrySchema, parsed);
-    if (!result.success) {
-      console.error(`Invalid entry ${f}:`, result.issues);
-      process.exit(1);
-    }
-    return result.output;
-  })
+// Same loader + validator as `ccpluginizer validate`: flattens array-shaped entry
+// files (a split scan emits several entries per file), enforces cross-entry name
+// uniqueness, and names the offending file in every error. An entries/ dir with no
+// files (e.g. the last entry just moved to tombstones/) builds an empty catalog.
+const { items, sources } = collectEntries(ENTRIES_DIR, { allowEmptyDir: true });
+const check = validateEntries(items, sources);
+if (!check.ok) {
+  console.error("Invalid entries:");
+  for (const error of check.errors) {
+    console.error(`  - ${error}`);
+  }
+  process.exit(1);
+}
+
+const entries = check.entries
   .filter((e) => !tombstoned.has(e.name))
-  .sort((a, b) => a.name.localeCompare(b.name));
+  .sort((a, b) => byCodeUnit(a.name, b.name));
 
 const marketplace: MarketplaceFile = {
   name: "ccp-marketplace",
