@@ -1,4 +1,4 @@
-import { basename, join, relative, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import {
   dirContainsDir,
   dirContainsFile,
@@ -84,14 +84,28 @@ const SKIP_DIRS = new Set([
  * the common sub-threshold scan from reading and parsing every .md in the repo.
  */
 export function createLayoutResolver(repoRoot: string, caches: ScanCaches = {}): LayoutResolver {
+  // Canonicalize to an absolute path so `join(child, "..") === repoRoot` holds exactly:
+  // the inside-skill walk compares parents against repoRoot by string equality, and a
+  // relative ("./repo") or trailing-slash root would defeat that equality — silently
+  // mis-classifying the root's children, or (a relative root) recursing toward the
+  // filesystem root forever (`join("./repo/skills","..")` collapses the "./").
+  repoRoot = resolve(repoRoot);
   const list = caches.list ?? makeDirLister();
   const readFm = caches.readFrontmatter ?? makeFrontmatterReader();
   const dirs: string[] = [];
   walkTree(repoRoot, { skipDirs: SKIP_DIRS, list, onDir: (d) => dirs.push(d) });
 
-  // Dirs living INSIDE a skill (a skill's templates/examples shipping their own
-  // SKILL.md files) can neither compete for the container nor count as uncovered
-  // skills — they are content of the skill that carries them.
+  // Is `dir` content shipped INSIDE a skill (a skill's own templates/examples/sample
+  // sub-skills or even a complete sample plugin that carry their own SKILL.md)? Such
+  // dirs must neither compete for a container nor count as uncovered skills. `dir` is
+  // skill content when any ancestor is a BUNDLING skill — a dir with a SKILL.md that is
+  // not itself a plugin root. The walk continues THROUGH a nested plugin root (a sample
+  // plugin bundled inside a tutorial skill is still that skill's content), while
+  // `!dirIsPluginRoot(parent)` keeps a real plugin's OWN components (its agents/skills
+  // are not bundled by the plugin root itself). Two structural exceptions break the
+  // chain so the repo root's own conventional containers survive its incidental SKILL.md:
+  //   - the filesystem root (guards a degenerate path), and
+  //   - the repo root's own `skills/` or `agents/` container.
   const insideSkillMemo = new Map<string, boolean>();
   const insideSkill = (dir: string): boolean => {
     if (dir === repoRoot) {
@@ -102,20 +116,33 @@ export function createLayoutResolver(repoRoot: string, caches: ScanCaches = {}):
       return memo;
     }
     const parent = join(dir, "..");
-    const result = dirContainsFile(list, parent, "SKILL.md") || insideSkill(parent);
+    let result: boolean;
+    if (parent === dir || (parent === repoRoot && (basename(dir) === "skills" || basename(dir) === "agents"))) {
+      result = false;
+    } else {
+      const parentBundles = !dirIsPluginRoot(list, parent) && dirContainsFile(list, parent, "SKILL.md");
+      result = parentBundles || insideSkill(parent);
+    }
     insideSkillMemo.set(dir, result);
     return result;
   };
 
-  const counted = dirs
-    .filter((d) => !insideSkill(d))
-    .map((absDir) => ({
-      absDir,
-      relPath: toRel(repoRoot, absDir),
-      // SKIP_DIRS children were never walked; probing them would pay fresh readdirs
-      // for dirs that can never win resolution (node_modules, dist, ...).
-      count: countSkillMdDirs(absDir, list, SKIP_DIRS),
-    }));
+  // A directory is eligible to be a CONTAINER (of skills or agents) only when it is
+  // neither content of a skill nor itself a skill leaf: a skill is a leaf, and its own
+  // SKILL.md children are bundled content, not sibling skills, so a skill that ships
+  // sub-skills cannot out-count the real container. A conventional `skills/` dir is
+  // exempt from the leaf test — it stays a candidate even when it carries an overview
+  // SKILL.md alongside its skill children.
+  const containerDirs = dirs.filter(
+    (d) => !insideSkill(d) && (basename(d) === "skills" || !dirContainsFile(list, d, "SKILL.md")),
+  );
+  const counted = containerDirs.map((absDir) => ({
+    absDir,
+    relPath: toRel(repoRoot, absDir),
+    // SKIP_DIRS children were never walked; probing them would pay fresh readdirs
+    // for dirs that can never win resolution (node_modules, dist, ...).
+    count: countSkillMdDirs(absDir, list, SKIP_DIRS),
+  }));
   const best = pickBest(counted);
   const skillsContainer =
     best === null
@@ -150,11 +177,17 @@ export function createLayoutResolver(repoRoot: string, caches: ScanCaches = {}):
     readFrontmatter: readFm,
     full(): SourceLayout {
       if (full === null) {
+        // pluginRoot/mcp/artifacts scan the FULL dir set: they identify their target
+        // unambiguously (a `.claude-plugin/plugin.json`) or self-anchor to the repo
+        // root / plugin root via anchoredDirs, so they must still see a plugin root (and
+        // its configs) even when it is nested under a wrapper skill. Only the agents
+        // resolver scans broadly for `.md` collections, so it uses containerDirs to keep
+        // a skill's bundled agents/ subdir from being chosen as the agents container.
         const pluginRoot = resolvePluginRoot(repoRoot, dirs, list);
         full = {
           skillsContainer,
           skillDirsOutsideContainer,
-          agentsContainer: resolveAgentsContainer(repoRoot, dirs, list, readFm),
+          agentsContainer: resolveAgentsContainer(repoRoot, containerDirs, list, readFm),
           pluginRoot,
           mcp: resolveMcp(repoRoot, dirs, list, pluginRoot),
           artifacts: resolveArtifacts(repoRoot, dirs, list, pluginRoot),
@@ -230,19 +263,26 @@ function resolveAgentsContainer(
     : { absDir: best.absDir, relPath: best.relPath, hasSkillsChild: best.hasSkillsChild, files: best.files };
 }
 
+/**
+ * Is `dir` a plugin root — does it hold `.claude-plugin/plugin.json`? Pre-filtering on
+ * the cached listing avoids a thrown-and-caught readdir for a non-existent child. Shared
+ * by resolvePluginRoot and the inside-skill classifier, which both treat a plugin root as
+ * structural (never bundled skill content) so its components are never dropped.
+ */
+function dirIsPluginRoot(list: DirLister, dir: string): boolean {
+  return (
+    dirContainsDir(list, dir, ".claude-plugin") &&
+    dirContainsFile(list, join(dir, ".claude-plugin"), "plugin.json")
+  );
+}
+
 function resolvePluginRoot(
   repoRoot: string,
   dirs: readonly string[],
   list: DirLister,
 ): { relPath: string } | null {
   const candidates = dirs
-    .filter(
-      (d) =>
-        // Pre-filter on the parent's cached listing: probing a non-existent
-        // .claude-plugin child would pay a thrown-and-caught readdir per dir.
-        dirContainsDir(list, d, ".claude-plugin") &&
-        dirContainsFile(list, join(d, ".claude-plugin"), "plugin.json"),
-    )
+    .filter((d) => dirIsPluginRoot(list, d))
     .map((d) => ({ relPath: toRel(repoRoot, d), count: 1 }));
   const best = pickBest(candidates);
   return best === null ? null : { relPath: best.relPath };
