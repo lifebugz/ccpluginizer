@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import * as v from "valibot";
 import type { BackendKind, GrouperRun } from "../detector/partition.ts";
+import { MAX_FRACTION, MAX_K, MIN_K } from "../detector/partition.ts";
 import { RawGroupSchema, RawGroupsSchema, type RawGroup } from "../schemas/rawGroups.ts";
 import { readJsonFile } from "../detector/fsWalk.ts";
 import { byCodeUnit } from "../detector/slugify.ts";
@@ -65,9 +66,11 @@ export function buildClusterPrompt(skills: readonly SkillMeta[]): string {
     "You are grouping Claude Code skills into a small number of coherent product domains.",
     "",
     "Rules:",
-    "- Produce between 2 and 12 groups.",
+    // Bounds rendered from the acceptance-gate constants so the prompt and the gate
+    // never disagree about what "valid" means.
+    `- Produce between ${String(MIN_K)} and ${String(MAX_K)} groups.`,
     "- Every skill must appear in exactly one group (disjoint, total cover).",
-    "- No group may contain more than ~70% of all skills.",
+    `- No group may contain more than ~${String(Math.round(MAX_FRACTION * 100))}% of all skills.`,
     "- Group by product/domain meaning, not by programming language.",
     '- Each group needs a short kebab-case "slug" (e.g. "messaging", "voice").',
     "",

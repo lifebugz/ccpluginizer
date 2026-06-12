@@ -84,10 +84,12 @@ export interface PartitionOptions {
   readonly markerMandatory?: boolean;
 }
 
-// Acceptance gate constants.
-const MIN_K = 2;
-const MAX_K = 12;
-const MAX_FRACTION = 0.7;
+// Acceptance gate constants. Exported so the LLM cluster prompt states the SAME
+// bounds it will be gated against — a prose copy in the prompt would silently drift
+// from the gate when a bound changes here, making the model aim at the wrong target.
+export const MIN_K = 2;
+export const MAX_K = 12;
+export const MAX_FRACTION = 0.7;
 const MIN_GROUP_SIZE = 3;
 const MISC = "misc";
 

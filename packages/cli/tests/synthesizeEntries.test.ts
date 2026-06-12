@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { serializeMarkerDraft, synthesizeEntry, synthesizeEntries } from "../src/detector/synthesize.ts";
 import { makeFlatSkillsRepo, makeNestedPlugin } from "./helpers.ts";
-import type { MarketplaceEntry } from "../src/schemas/marketplaceEntry.ts";
+import { NAME_REGEX, type MarketplaceEntry } from "../src/schemas/marketplaceEntry.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
 
@@ -16,6 +16,16 @@ describe("synthesizeEntries: back-compat (no split)", () => {
     expect(res.split).toBeNull();
     expect(res.entries.length).toBe(1);
     expect(res.entries[0]).toEqual(single);
+  });
+
+  test("single-entry name is schema-valid for repo names with dots/underscores", () => {
+    // GitHub repo names allow "." and "_" (e.g. "user/my_plugin.js"); the entry name
+    // must still satisfy NAME_REGEX, which rejects both. A bare slash-replace would
+    // leak them through on the single-entry path and emit an unparseable name.
+    const repoRoot = join(FIXTURES, "skills-only");
+    const entry = synthesizeEntry({ repoRoot, sourceRepo: "user/my_plugin.js" });
+    expect(entry.name).toMatch(NAME_REGEX);
+    expect(entry.name).toBe("user-my-plugin-js");
   });
 
   test("--no-split forces a single entry even on a splittable repo", async () => {

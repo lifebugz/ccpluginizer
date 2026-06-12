@@ -379,7 +379,11 @@ function markerIdentity(marker: MarkerFile): Partial<MarketplaceEntry> {
 }
 
 function synthesizeEntryFromDetection(input: SynthesizeInput, caches?: ScanCaches): MarketplaceEntry {
-  const conventionFindings = detectConventions(input.repoRoot);
+  // Reuse the scan-owned lister/skip channel: a fresh lister would re-readdir dirs the
+  // split attempt and the sniffer already listed, and — since it carries no onSkip —
+  // would silence permission-denied dirs encountered during conventions detection, so
+  // the "detection may be incomplete" warning would undercount on the fall-through path.
+  const conventionFindings = detectConventions(input.repoRoot, caches);
   const manifestResult = detectNonStandardManifest(input.repoRoot);
   const sniffFindings = detectContentSniff(input.repoRoot, caches);
 
@@ -544,7 +548,11 @@ function makeGitSubdirSource(repo: string, path: string): Source {
 }
 
 function defaultEntryName(sourceRepo: string): string {
-  return sourceRepo.replace("/", "-").toLowerCase();
+  // Must satisfy NAME_REGEX (`/^[a-z0-9][a-z0-9-]*$/`): a bare slash-replace leaves
+  // dots/underscores (legal in GitHub repo names, e.g. "user/my_plugin.js") that the
+  // single-entry path (buildEntryFromFindings) would emit unfiltered as an invalid
+  // name. slugify is the canonical guarantee of that contract.
+  return slugify(sourceRepo);
 }
 
 // ---------------------------------------------------------------------------
