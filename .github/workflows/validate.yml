@@ -32,6 +32,35 @@ jobs:
           cd packages/cli
           bun outdated --filter @typescript-eslint/* --filter eslint --filter typescript --filter valibot || true
 
+  # The jobs above run under Bun only. This job builds the CLI and exercises the
+  # published artifact under plain Node, so an import-time `Bun.*` global (which
+  # Bun-only CI would never catch) fails here instead of in a user's `npx` run.
+  node-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, lts/*] # engines floor (>=20) + current LTS
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: bun install
+      - name: Build CLI (bun build --target node)
+        run: bun run --filter '@ccpluginizer/*' build
+      - name: Smoke-test the built CLI under Node
+        run: |
+          node --version
+          # Loads the whole bundled dist/ (catching import-time Bun globals) and
+          # runs a real command end-to-end through the Node runtime.
+          for entry in entries/*.json; do
+            node packages/cli/dist/index.js validate "$entry"
+          done
+
   changeset-check:
     if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main'
     runs-on: ubuntu-latest
