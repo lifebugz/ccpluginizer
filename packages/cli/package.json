@@ -1,6 +1,6 @@
 {
   "name": "@ccpluginizer/ccpluginizer",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "CLI for pluginizing non-plugin Claude Code repos",
   "license": "MIT",
   "type": "module",
