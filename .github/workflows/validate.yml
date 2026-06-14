@@ -35,6 +35,13 @@ jobs:
   # The jobs above run under Bun only. This job builds the CLI and exercises the
   # published artifact under plain Node, so an import-time `Bun.*` global (which
   # Bun-only CI would never catch) fails here instead of in a user's `npx` run.
+  #
+  # SCOPE: this only runs `validate`, the one command that imports neither
+  # @crustjs/prompts nor @crustjs/style, so it cannot reach the *call-time* Bun
+  # globals that exist today — Bun.stripANSI (via @crustjs/style `visibleWidth`,
+  # reached by `scan`'s confirm() prompt) and Bun.color, both unguarded. Those
+  # still crash `npx ccpluginizer scan` under Node and are NOT caught here; the
+  # real fix is to guard them in @crustjs/style (cf. the guarded Bun.which).
   node-smoke:
     runs-on: ubuntu-latest
     strategy:
