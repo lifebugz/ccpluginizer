@@ -20,7 +20,11 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          # v3 deprecated the `app-id` input in favor of `client-id`. The App's
+          # numeric ID is itself a valid JWT issuer (the action forwards either
+          # input to octokit's `appId`), so we keep the existing secret value and
+          # only switch the input name. (Secret still holds the numeric App ID.)
+          client-id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
 
       - uses: actions/checkout@v6
