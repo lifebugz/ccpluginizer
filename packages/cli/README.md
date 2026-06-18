@@ -6,25 +6,29 @@ Generate and validate [ccpluginizer marketplace](https://github.com/lifebugz/ccp
 
 ## Install
 
-Works with either runtime. Pick whichever you have.
+ccpluginizer is **Bun-first**. Two co-equal ways to run it — pick whichever fits.
 
-With Bun:
+### Bun (light)
 
 ```bash
 bun add -g @ccpluginizer/ccpluginizer
-# or one-shot:
+# or one-shot, no install:
 bunx @ccpluginizer/ccpluginizer scan <owner/repo>
 ```
 
-With npm or Node:
+Don't have Bun? `curl -fsSL https://bun.sh/install | bash`.
 
-```bash
-npm install -g @ccpluginizer/ccpluginizer
-# or one-shot:
-npx @ccpluginizer/ccpluginizer scan <owner/repo>
-```
+### Native binary (self-contained)
 
-At runtime the CLI prefers Bun when it's around (it starts faster), and falls back to Node otherwise. You don't need to configure anything.
+Download the binary for your platform from
+[GitHub Releases](https://github.com/lifebugz/ccpluginizer/releases) — no runtime
+required (the Bun runtime is embedded).
+
+> **Windows:** ccpluginizer's `bin/ccpluginizer` launcher is a POSIX shell script
+> that doesn't run natively on Windows — use the `windows-x64` native binary instead.
+
+> **Node is not supported.** The CLI uses Bun-native APIs; running it under
+> `npm`/`npx` (Node) refuses to start with a pointer to the two paths above.
 
 ## Usage
 
