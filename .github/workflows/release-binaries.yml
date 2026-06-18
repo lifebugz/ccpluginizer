@@ -1,0 +1,73 @@
+name: release-binaries
+
+on:
+  release:
+    types: [published]
+
+# Deny-all by default; the build job below opts into the single scope it needs.
+permissions: {}
+
+# Serialise duplicate Release events for the same tag rather than running two full
+# 5-leg matrices at once (mirrors release.yml's concurrency guard).
+concurrency:
+  group: release-binaries-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+# Fire only for THIS package's Release tag — not a future @ccpluginizer/native (or
+# any other) Release in this repo. The tag is created by scripts/publish.ts via
+# `changeset tag`; changesets/action then cuts the Release using the release-bot
+# App token (release.yml). A default-GITHUB_TOKEN Release would NOT trigger
+# `on: release`, and a chore/CI re-run produces no new tag → no Release → this
+# workflow correctly never rebuilds a ~60 MB binary.
+jobs:
+  build:
+    if: startsWith(github.event.release.tag_name, '@ccpluginizer/ccpluginizer@')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-latest
+            asset: ccpluginizer-darwin-arm64
+          - target: darwin-x64
+            runner: macos-15-intel   # GitHub-hosted x86_64 macOS (macos-13 retired 2025-12-04)
+            asset: ccpluginizer-darwin-x64
+          - target: linux-x64
+            runner: ubuntu-latest
+            asset: ccpluginizer-linux-x64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm   # GitHub public ARM runner
+            asset: ccpluginizer-linux-arm64
+          - target: windows-x64
+            runner: windows-latest
+            asset: ccpluginizer-windows-x64.exe
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write   # gh release upload
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Compile native binary
+        shell: bash
+        run: |
+          bun build packages/cli/src/index.ts \
+            --compile --target bun-${{ matrix.target }} \
+            --outfile "${{ matrix.asset }}"
+      - name: Smoke — validate the entries directory on a forced-color TTY
+        shell: bash
+        env:
+          FORCE_COLOR: "3"
+          COLORTERM: truecolor
+          TERM: xterm-256color
+        run: |
+          ./"${{ matrix.asset }}" validate entries
+      - name: Upload to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" "${{ matrix.asset }}" --clobber
