@@ -23,11 +23,20 @@ Auto-update happens for free. Entries omit `version` fields, so Claude Code fall
 
 ## CLI
 
-Install globally:
+ccpluginizer is **Bun-first**, with two co-equal install paths:
 
 ```bash
-bun add -g @ccpluginizer/ccpluginizer
+# Bun (light):
+bun add -g @ccpluginizer/ccpluginizer            # global
+bunx @ccpluginizer/ccpluginizer scan <owner/repo> # one-shot, no install
+
+# Native binary (self-contained, no runtime needed):
+# download from https://github.com/lifebugz/ccpluginizer/releases
 ```
+
+**Windows** users should use the `windows-x64` native binary (ccpluginizer's
+`bin/ccpluginizer` launcher is a POSIX shell script that doesn't run natively on
+Windows). **Node is not supported** — the CLI uses Bun-native APIs.
 
 Then run:
 
@@ -37,12 +46,6 @@ ccpluginizer validate <entry|dir|array> # Validate entries against the schema (+
 ```
 
 To add a repo to this catalog, run `scan --out-dir entries` (one JSON file per emitted entry; a single un-split scan can also be saved as `entries/<name>.json`) and open a PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-One-shot, no install:
-
-```bash
-bunx @ccpluginizer/ccpluginizer scan <owner/repo>
-```
 
 ### Splitting bloated plugins
 
