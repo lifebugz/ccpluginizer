@@ -27,7 +27,6 @@ required (the Bun runtime is embedded; ~61 MB):
 | Platform | Asset |
 |---|---|
 | macOS (Apple Silicon) | `ccpluginizer-darwin-arm64` |
-| macOS (Intel) | `ccpluginizer-darwin-x64` |
 | Linux x64 | `ccpluginizer-linux-x64` |
 | Linux arm64 | `ccpluginizer-linux-arm64` |
 | Windows x64 | `ccpluginizer-windows-x64.exe` |
@@ -38,7 +37,7 @@ chmod +x ccpluginizer-<os>-<arch>
 ```
 
 > **macOS:** the binaries are unsigned, so Gatekeeper quarantines them. Clear it
-> per download: `xattr -d com.apple.quarantine ./ccpluginizer-darwin-*`.
+> per download: `xattr -d com.apple.quarantine ./ccpluginizer-darwin-arm64`.
 > **Windows:** the unsigned `.exe` triggers SmartScreen — choose *More info →
 > Run anyway*.
 

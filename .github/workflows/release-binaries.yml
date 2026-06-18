@@ -29,9 +29,6 @@ jobs:
           - target: darwin-arm64
             runner: macos-latest
             asset: ccpluginizer-darwin-arm64
-          - target: darwin-x64
-            runner: macos-15-intel   # GitHub-hosted x86_64 macOS (macos-13 retired 2025-12-04)
-            asset: ccpluginizer-darwin-x64
           - target: linux-x64
             runner: ubuntu-latest
             asset: ccpluginizer-linux-x64
