@@ -31,7 +31,8 @@ bun add -g @ccpluginizer/ccpluginizer            # global
 bunx @ccpluginizer/ccpluginizer scan <owner/repo> # one-shot, no install
 
 # Native binary (self-contained, no runtime needed):
-# download from https://github.com/lifebugz/ccpluginizer/releases
+# download ccpluginizer-<os>-<arch> from https://github.com/lifebugz/ccpluginizer/releases
+# (unsigned: macOS `xattr -d com.apple.quarantine`, Windows SmartScreen "Run anyway")
 ```
 
 **Windows** users should use the `windows-x64` native binary (ccpluginizer's

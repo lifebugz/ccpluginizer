@@ -22,10 +22,28 @@ Don't have Bun? `curl -fsSL https://bun.sh/install | bash`.
 
 Download the binary for your platform from
 [GitHub Releases](https://github.com/lifebugz/ccpluginizer/releases) — no runtime
-required (the Bun runtime is embedded).
+required (the Bun runtime is embedded; ~61 MB):
+
+| Platform | Asset |
+|---|---|
+| macOS (Apple Silicon) | `ccpluginizer-darwin-arm64` |
+| macOS (Intel) | `ccpluginizer-darwin-x64` |
+| Linux x64 | `ccpluginizer-linux-x64` |
+| Linux arm64 | `ccpluginizer-linux-arm64` |
+| Windows x64 | `ccpluginizer-windows-x64.exe` |
+
+```bash
+chmod +x ccpluginizer-<os>-<arch>
+./ccpluginizer-<os>-<arch> scan <owner/repo>
+```
+
+> **macOS:** the binaries are unsigned, so Gatekeeper quarantines them. Clear it
+> per download: `xattr -d com.apple.quarantine ./ccpluginizer-darwin-*`.
+> **Windows:** the unsigned `.exe` triggers SmartScreen — choose *More info →
+> Run anyway*.
 
 > **Windows:** ccpluginizer's `bin/ccpluginizer` launcher is a POSIX shell script
-> that doesn't run natively on Windows — use the `windows-x64` native binary instead.
+> that doesn't run natively on Windows, so prefer this native binary over the Bun path.
 
 > **Node is not supported.** The CLI uses Bun-native APIs; running it under
 > `npm`/`npx` (Node) refuses to start with a pointer to the two paths above.
