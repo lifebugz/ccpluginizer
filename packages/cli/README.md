@@ -22,7 +22,7 @@ Don't have Bun? `curl -fsSL https://bun.sh/install | bash`.
 
 Download the binary for your platform from
 [GitHub Releases](https://github.com/lifebugz/ccpluginizer/releases) — no runtime
-required (the Bun runtime is embedded; ~61 MB):
+required (the Bun runtime is embedded; ~60 MB):
 
 | Platform | Asset |
 |---|---|
@@ -32,12 +32,17 @@ required (the Bun runtime is embedded; ~61 MB):
 | Windows x64 | `ccpluginizer-windows-x64.exe` |
 
 ```bash
+# macOS / Linux — mark executable, then run:
 chmod +x ccpluginizer-<os>-<arch>
+# macOS only: clear the Gatekeeper quarantine flag first (see the macOS note below)
 ./ccpluginizer-<os>-<arch> scan <owner/repo>
+
+# Windows (PowerShell or cmd) — run the .exe directly:
+.\ccpluginizer-windows-x64.exe scan <owner/repo>
 ```
 
 > **macOS:** the binaries are unsigned, so Gatekeeper quarantines them. Clear it
-> per download: `xattr -d com.apple.quarantine ./ccpluginizer-darwin-arm64`.
+> before running: `xattr -c ./ccpluginizer-darwin-arm64`.
 > **Windows:** the unsigned `.exe` triggers SmartScreen — choose *More info →
 > Run anyway*.
 

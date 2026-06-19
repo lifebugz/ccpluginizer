@@ -32,7 +32,7 @@ bunx @ccpluginizer/ccpluginizer scan <owner/repo> # one-shot, no install
 
 # Native binary (self-contained, no runtime needed):
 # download ccpluginizer-<os>-<arch> from https://github.com/lifebugz/ccpluginizer/releases
-# (unsigned: macOS `xattr -d com.apple.quarantine`, Windows SmartScreen "Run anyway")
+# (unsigned: macOS `xattr -c ./ccpluginizer-<os>-<arch>`, Windows SmartScreen "Run anyway")
 ```
 
 **Windows** users should use the `windows-x64` native binary (ccpluginizer's
