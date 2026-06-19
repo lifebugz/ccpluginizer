@@ -1,5 +1,22 @@
 # @ccpluginizer/ccpluginizer
 
+## 0.7.0
+
+### Minor Changes
+
+- [#35](https://github.com/lifebugz/ccpluginizer/pull/35) [`eef5f0f`](https://github.com/lifebugz/ccpluginizer/commit/eef5f0f7b67c2b0c9ed5e2c32beb49f22943a0b5) Thanks [@lifebugz](https://github.com/lifebugz)! - BREAKING: Node is no longer a supported runtime. Run ccpluginizer under Bun
+  (`bunx @ccpluginizer/ccpluginizer …` or `bun add -g`) or download a native
+  binary from GitHub Releases. The CLI now builds with `--target bun`, requires
+  `bun >=1.2.0`, and a first-import runtime guard refuses to start on Node or Bun
+  <1.2 with a pointer to both supported paths.
+
+### Patch Changes
+
+- [#37](https://github.com/lifebugz/ccpluginizer/pull/37) [`a1b710c`](https://github.com/lifebugz/ccpluginizer/commit/a1b710c10f134d2a9464611b9c7c8bb741fca784) Thanks [@lifebugz](https://github.com/lifebugz)! - Native binaries: a `release-binaries.yml` workflow now cross-builds self-contained
+  executables for macOS (arm64), Linux (x64/arm64), and Windows (x64) and uploads
+  them to each GitHub Release. The package README documents the downloads and the
+  unsigned-binary (Gatekeeper/SmartScreen) caveats. No change to the published JS bundle.
+
 ## 0.6.1
 
 ### Patch Changes
