@@ -6,7 +6,7 @@ export class AlreadyMarketplaceError extends CcpluginizerError {
   public override readonly name = "AlreadyMarketplaceError";
   public constructor(public readonly repoPath: string) {
     super(
-      "This repo is already a marketplace; install via `/plugin marketplace add <repo>` directly. ccpluginizer is for non-plugin repos only.",
+      "This repo is already a marketplace; install via `/plugin marketplace add <repo>` directly. ccpz is for non-plugin repos only.",
     );
   }
 }
