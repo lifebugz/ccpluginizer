@@ -31,12 +31,12 @@ bun add -g @ccpluginizer/ccpz            # global
 bunx @ccpluginizer/ccpz scan <owner/repo> # one-shot, no install
 
 # Native binary (self-contained, no runtime needed):
-# download ccpluginizer-<os>-<arch> from https://github.com/lifebugz/ccpluginizer/releases
-# (unsigned: macOS `xattr -c ./ccpluginizer-<os>-<arch>`, Windows SmartScreen "Run anyway")
+# download ccpz-<os>-<arch> from https://github.com/lifebugz/ccpluginizer/releases
+# (unsigned: macOS `xattr -c ./ccpz-<os>-<arch>`, Windows SmartScreen "Run anyway")
 ```
 
 **Windows** users should use the `windows-x64` native binary (ccpluginizer's
-`bin/ccpluginizer` launcher is a POSIX shell script that doesn't run natively on
+`bin/ccpz` launcher is a POSIX shell script that doesn't run natively on
 Windows). **Node is not supported** — the CLI uses Bun-native APIs.
 
 Then run:

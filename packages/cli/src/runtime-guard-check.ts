@@ -7,9 +7,9 @@
 
 /**
  * The two-path signpost printed when the host can't run this CLI. MUST stay
- * textually identical to the no-Bun branch of `bin/ccpluginizer`.
+ * textually identical to the no-Bun branch of `bin/ccpz`.
  */
-export const RUNTIME_GUARD_MESSAGE = `ccpluginizer runs on Bun or as a standalone binary.
+export const RUNTIME_GUARD_MESSAGE = `ccpz runs on Bun or as a standalone binary.
   • Install Bun:    curl -fsSL https://bun.sh/install | bash   then re-run
   • Or download a native binary: https://github.com/lifebugz/ccpluginizer/releases`;
 
