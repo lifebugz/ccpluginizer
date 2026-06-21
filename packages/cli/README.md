@@ -26,10 +26,10 @@ required (the Bun runtime is embedded; ~60 MB):
 
 | Platform | Asset |
 |---|---|
-| macOS (Apple Silicon) | `ccpluginizer-darwin-arm64` |
-| Linux x64 | `ccpluginizer-linux-x64` |
-| Linux arm64 | `ccpluginizer-linux-arm64` |
-| Windows x64 | `ccpluginizer-windows-x64.exe` |
+| macOS (Apple Silicon) | `ccpz-darwin-arm64` |
+| Linux x64 | `ccpz-linux-x64` |
+| Linux arm64 | `ccpz-linux-arm64` |
+| Windows x64 | `ccpz-windows-x64.exe` |
 
 ```bash
 # macOS / Linux — mark executable, then run:
@@ -38,11 +38,11 @@ chmod +x ccpluginizer-<os>-<arch>
 ./ccpluginizer-<os>-<arch> scan <owner/repo>
 
 # Windows (PowerShell or cmd) — run the .exe directly:
-.\ccpluginizer-windows-x64.exe scan <owner/repo>
+.\ccpz-windows-x64.exe scan <owner/repo>
 ```
 
 > **macOS:** the binaries are unsigned, so Gatekeeper quarantines them. Clear it
-> before running: `xattr -c ./ccpluginizer-darwin-arm64`.
+> before running: `xattr -c ./ccpz-darwin-arm64`.
 > **Windows:** the unsigned `.exe` triggers SmartScreen — choose *More info →
 > Run anyway*.
 
