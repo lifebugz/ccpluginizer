@@ -1,5 +1,5 @@
 {
-  "name": "@ccpluginizer/ccpluginizer",
+  "name": "@ccpluginizer/ccpz",
   "version": "0.7.0",
   "description": "CLI for pluginizing non-plugin Claude Code repos",
   "license": "MIT",
@@ -19,10 +19,11 @@
     "plugin",
     "marketplace",
     "cli",
+    "ccpz",
     "ccpluginizer"
   ],
   "bin": {
-    "ccpluginizer": "./bin/ccpluginizer"
+    "ccpz": "./bin/ccpz"
   },
   "files": [
     "bin",

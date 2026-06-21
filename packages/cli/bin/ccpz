@@ -9,13 +9,13 @@ while [ -L "$script" ]; do
   esac
 done
 dist="$(cd "$(dirname "$script")" && pwd)/../dist/index.js"
-# ccpluginizer is Bun-only (the dist uses Bun.* globals). Prefer bun on PATH;
+# ccpz is Bun-only (the dist uses Bun.* globals). Prefer bun on PATH;
 # otherwise signpost both supported paths and exit non-zero — no node fallback.
 if command -v bun >/dev/null 2>&1; then
   exec bun "$dist" "$@"
 fi
 cat >&2 <<'EOF'
-ccpluginizer runs on Bun or as a standalone binary.
+ccpz runs on Bun or as a standalone binary.
   • Install Bun:    curl -fsSL https://bun.sh/install | bash   then re-run
   • Or download a native binary: https://github.com/lifebugz/ccpluginizer/releases
 EOF
