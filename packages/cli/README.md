@@ -1,4 +1,4 @@
-# @ccpluginizer/ccpluginizer
+# @ccpluginizer/ccpz
 
 > CLI for pluginizing non-plugin Claude Code repos.
 
@@ -11,9 +11,9 @@ ccpluginizer is **Bun-first**. Two co-equal ways to run it — pick whichever fi
 ### Bun (light)
 
 ```bash
-bun add -g @ccpluginizer/ccpluginizer
+bun add -g @ccpluginizer/ccpz
 # or one-shot, no install:
-bunx @ccpluginizer/ccpluginizer scan <owner/repo>
+bunx @ccpluginizer/ccpz scan <owner/repo>
 ```
 
 Don't have Bun? `curl -fsSL https://bun.sh/install | bash`.
@@ -55,8 +55,8 @@ chmod +x ccpluginizer-<os>-<arch>
 ## Usage
 
 ```bash
-ccpluginizer scan <owner/repo>     # Generate a marketplace entry
-ccpluginizer validate <entry.json> # Validate an entry against the schema
+ccpz scan <owner/repo>     # Generate a marketplace entry
+ccpz validate <entry.json> # Validate an entry against the schema
 ```
 
 To add a repo to the catalog, run `scan`, commit the JSON to `entries/<name>.json` in the catalog repo, and open a PR. See the catalog's [CONTRIBUTING.md](https://github.com/lifebugz/ccpluginizer/blob/main/CONTRIBUTING.md).

@@ -7,10 +7,10 @@ Thanks for adding to ccpluginizer's catalog. The flow below covers the common ca
 1. Generate the entry JSON for the source repo:
 
    ```bash
-   # After installing globally (bun add -g @ccpluginizer/ccpluginizer):
-   ccpluginizer scan <owner/repo>
+   # After installing globally (bun add -g @ccpluginizer/ccpz):
+   ccpz scan <owner/repo>
    # Or one-shot without installing:
-   bunx @ccpluginizer/ccpluginizer scan <owner/repo>
+   bunx @ccpluginizer/ccpz scan <owner/repo>
    ```
 
 2. Fork this repo, save the output to `entries/<name>.json`, and verify it merges cleanly:
@@ -86,8 +86,8 @@ For a brand-new package name, configure a Trusted Publisher on npm before the fi
 
 ### Yanking a release
 
-`npm unpublish @ccpluginizer/ccpluginizer@<version>` within 72 hours of publish. After 72h, contact npm support.
+`npm unpublish @ccpluginizer/ccpz@<version>` within 72 hours of publish. After 72h, contact npm support.
 
 ### Adding a workspace dependency between packages
 
-If you add an internal `workspace:*` dependency between packages (e.g., a future `@ccpluginizer/utils` consumed by `@ccpluginizer/ccpluginizer`), re-verify with `bun pm pack` that the published tarball still has concrete version specifiers (no `workspace:*` strings survive). `bun publish` strips workspace protocols at pack time, but it's worth confirming for any new dependency shape.
+If you add an internal `workspace:*` dependency between packages (e.g., a future `@ccpluginizer/utils` consumed by `@ccpluginizer/ccpz`), re-verify with `bun pm pack` that the published tarball still has concrete version specifiers (no `workspace:*` strings survive). `bun publish` strips workspace protocols at pack time, but it's worth confirming for any new dependency shape.

@@ -27,8 +27,8 @@ ccpluginizer is **Bun-first**, with two co-equal install paths:
 
 ```bash
 # Bun (light):
-bun add -g @ccpluginizer/ccpluginizer            # global
-bunx @ccpluginizer/ccpluginizer scan <owner/repo> # one-shot, no install
+bun add -g @ccpluginizer/ccpz            # global
+bunx @ccpluginizer/ccpz scan <owner/repo> # one-shot, no install
 
 # Native binary (self-contained, no runtime needed):
 # download ccpluginizer-<os>-<arch> from https://github.com/lifebugz/ccpluginizer/releases
@@ -42,8 +42,8 @@ Windows). **Node is not supported** — the CLI uses Bun-native APIs.
 Then run:
 
 ```bash
-ccpluginizer scan <owner/repo>          # Generate a marketplace entry (auto-splits bloated plugins)
-ccpluginizer validate <entry|dir|array> # Validate entries against the schema (+ duplicate-name check)
+ccpz scan <owner/repo>          # Generate a marketplace entry (auto-splits bloated plugins)
+ccpz validate <entry|dir|array> # Validate entries against the schema (+ duplicate-name check)
 ```
 
 To add a repo to this catalog, run `scan --out-dir entries` (one JSON file per emitted entry; a single un-split scan can also be saved as `entries/<name>.json`) and open a PR. See [CONTRIBUTING.md](./CONTRIBUTING.md).
@@ -60,13 +60,13 @@ So `scan` **splits by default, but only when it helps**. When a repo has many sk
 Install only the domains you need; the skill-listing budget is charged only for those. Small or single-domain repos are unaffected — output stays a single entry, identical to before apart from deterministic path ordering (sniff-detected paths are now emitted sorted) and stricter-parser fixes (skills/agents with BOM/CRLF or numeric frontmatter that older versions wrongly dropped are now detected), and a one-line `stderr` notice reports whenever (and how) a split happened.
 
 ```bash
-ccpluginizer scan team-telnyx/ai                 # auto-split (deterministic, offline — no LLM)
-ccpluginizer scan team-telnyx/ai --no-split      # force a single entry
-ccpluginizer scan team-telnyx/ai --umbrella      # also emit the everything-in-one entry (reintroduces full cost)
-ccpluginizer scan team-telnyx/ai --cluster=auto-llm --llm-cmd "ollama run llama3"   # deterministic first, LLM only if no clean partition
-ccpluginizer scan team-telnyx/ai --cluster=llm   --llm-cmd "llm -m gpt-4o-mini"     # LLM-first (deterministic fallback)
-ccpluginizer scan team-telnyx/ai --out-dir=entries    # write one JSON file per emitted entry
-ccpluginizer scan team-telnyx/ai --cluster=auto-llm --write-marker   # freeze the emitted grouping into .ccpluginizer.json
+ccpz scan team-telnyx/ai                 # auto-split (deterministic, offline — no LLM)
+ccpz scan team-telnyx/ai --no-split      # force a single entry
+ccpz scan team-telnyx/ai --umbrella      # also emit the everything-in-one entry (reintroduces full cost)
+ccpz scan team-telnyx/ai --cluster=auto-llm --llm-cmd "ollama run llama3"   # deterministic first, LLM only if no clean partition
+ccpz scan team-telnyx/ai --cluster=llm   --llm-cmd "llm -m gpt-4o-mini"     # LLM-first (deterministic fallback)
+ccpz scan team-telnyx/ai --out-dir=entries    # write one JSON file per emitted entry
+ccpz scan team-telnyx/ai --cluster=auto-llm --write-marker   # freeze the emitted grouping into .ccpluginizer.json
 ```
 
 **Clustering strategies.** `--cluster` selects how skills are grouped:
