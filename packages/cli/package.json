@@ -23,7 +23,7 @@
     "ccpluginizer"
   ],
   "bin": {
-    "ccpz": "./bin/ccpz"
+    "ccpz": "bin/ccpz"
   },
   "files": [
     "bin",
