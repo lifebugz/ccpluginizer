@@ -1,5 +1,11 @@
 # @ccpluginizer/ccpluginizer
 
+## 0.8.0
+
+### Minor Changes
+
+- [#39](https://github.com/lifebugz/ccpluginizer/pull/39) [`e9027b1`](https://github.com/lifebugz/ccpluginizer/commit/e9027b117cb8388649a8af66a4dff91dbde8c9f9) Thanks [@lifebugz](https://github.com/lifebugz)! - Renamed: package `@ccpluginizer/ccpluginizer` → `@ccpluginizer/ccpz`, command `ccpluginizer` → `ccpz` (and `ccpluginizer:` diagnostics → `ccpz:`). Env vars (`CCPLUGINIZER_*`), the `.ccpluginizer.json` marker, and the cache dir are unchanged. The old `ccpluginizer` command no longer ships; install `@ccpluginizer/ccpz`.
+
 ## 0.7.0
 
 ### Minor Changes
