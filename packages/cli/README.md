@@ -46,7 +46,7 @@ chmod +x ccpz-<os>-<arch>
 > **Windows:** the unsigned `.exe` triggers SmartScreen — choose *More info →
 > Run anyway*.
 
-> **Windows:** ccpluginizer's `bin/ccpz` launcher is a POSIX shell script
+> **Windows:** the `bin/ccpz` launcher is a POSIX shell script
 > that doesn't run natively on Windows, so prefer this native binary over the Bun path.
 
 > **Node is not supported.** The CLI uses Bun-native APIs; running it under
