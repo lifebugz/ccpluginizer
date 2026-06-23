@@ -13,12 +13,12 @@ labels: [needs-triage]
 <!-- The exact commands, in order. -->
 
 ```bash
-bunx @ccpluginizer/ccpluginizer scan owner/repo
+bunx @ccpluginizer/ccpz scan owner/repo
 ```
 
 ## Environment (for bugs)
 
-- ccpluginizer version: <!-- `ccpluginizer --version` -->
+- ccpz version: <!-- `ccpz --version` -->
 - Runtime: <!-- Bun X.Y.Z or Node X.Y.Z -->
 - OS: <!-- macOS / Linux / Windows -->
 - Claude Code version (if relevant to install issues): <!-- 2.1.X -->

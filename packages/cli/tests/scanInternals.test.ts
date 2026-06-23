@@ -119,19 +119,19 @@ describe("printSplitNotice taxonomy", () => {
 describe("printNoSplitNotice", () => {
   test("gate-rejected LLM grouping -> exact phrasing, names the cluster", async () => {
     expect(await capture(() => { printNoSplitNotice("auto-llm", GATE_REJECTED); }))
-      .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM grouping was rejected by the acceptance gate, and no clean deterministic partition; emitting a single entry.");
+      .toBe("ccpz: --cluster=auto-llm produced no split — the LLM grouping was rejected by the acceptance gate, and no clean deterministic partition; emitting a single entry.");
   });
   test("backend ran but produced nothing -> unreachable phrasing", async () => {
     expect(await capture(() => { printNoSplitNotice("auto-llm", NO_OUTPUT); }))
-      .toBe("ccpluginizer: --cluster=auto-llm produced no split — the LLM backend was unreachable or produced no usable output, and no clean deterministic partition; emitting a single entry.");
+      .toBe("ccpz: --cluster=auto-llm produced no split — the LLM backend was unreachable or produced no usable output, and no clean deterministic partition; emitting a single entry.");
   });
   test("no backend -> the actionable hint, same as the split-notice variant", async () => {
     expect(await capture(() => { printNoSplitNotice("llm", NO_BACKEND); }))
-      .toBe("ccpluginizer: --cluster=llm produced no split — no LLM backend found; set --llm-cmd or install the `claude` CLI, and no clean deterministic partition; emitting a single entry.");
+      .toBe("ccpz: --cluster=llm produced no split — no LLM backend found; set --llm-cmd or install the `claude` CLI, and no clean deterministic partition; emitting a single entry.");
   });
   test("a forced deterministic strategy that found no partition explains itself too", async () => {
     expect(await capture(() => { printNoSplitNotice("metadata", undefined); }))
-      .toBe("ccpluginizer: --cluster=metadata produced no split — no clean deterministic partition; emitting a single entry.");
+      .toBe("ccpz: --cluster=metadata produced no split — no clean deterministic partition; emitting a single entry.");
   });
 });
 

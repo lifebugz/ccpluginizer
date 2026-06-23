@@ -21,23 +21,23 @@ concurrency:
 # workflow correctly never rebuilds a ~60 MB binary.
 jobs:
   build:
-    if: startsWith(github.event.release.tag_name, '@ccpluginizer/ccpluginizer@')
+    if: startsWith(github.event.release.tag_name, '@ccpluginizer/ccpz@')
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: darwin-arm64
             runner: macos-latest
-            asset: ccpluginizer-darwin-arm64
+            asset: ccpz-darwin-arm64
           - target: linux-x64
             runner: ubuntu-latest
-            asset: ccpluginizer-linux-x64
+            asset: ccpz-linux-x64
           - target: linux-arm64
             runner: ubuntu-24.04-arm   # GitHub public ARM runner
-            asset: ccpluginizer-linux-arm64
+            asset: ccpz-linux-arm64
           - target: windows-x64
             runner: windows-latest
-            asset: ccpluginizer-windows-x64.exe
+            asset: ccpz-windows-x64.exe
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write   # gh release upload

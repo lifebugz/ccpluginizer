@@ -347,7 +347,7 @@ export function resolveGrouper(opts: ResolveGrouperOpts, deps: GrouperDeps = {})
     const renderEnvNotice =
       deps.onEnvCmdRun ??
       ((c: string): void => {
-        console.error(`ccpluginizer: running LLM grouper from CCPLUGINIZER_LLM_CMD: ${c}`);
+        console.error(`ccpz: running LLM grouper from CCPLUGINIZER_LLM_CMD: ${c}`);
       });
     const onRun =
       opts.cmdFromEnv

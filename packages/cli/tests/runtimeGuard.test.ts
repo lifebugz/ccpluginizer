@@ -20,6 +20,7 @@ describe("isSupportedRuntime", () => {
   });
 
   test("message signposts both the Bun install and the binary releases URL", () => {
+    expect(RUNTIME_GUARD_MESSAGE).toContain("ccpz runs on");
     expect(RUNTIME_GUARD_MESSAGE).toContain("bun.sh/install");
     expect(RUNTIME_GUARD_MESSAGE).toContain("github.com/lifebugz/ccpluginizer/releases");
   });

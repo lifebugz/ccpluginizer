@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Suggest a source repo for the catalog
     url: https://github.com/lifebugz/ccpluginizer/blob/main/CONTRIBUTING.md
-    about: Run `ccpluginizer scan owner/repo`, save the JSON to entries/<name>.json, and open a PR. See CONTRIBUTING.md for the full flow.
+    about: Run `ccpz scan owner/repo`, save the JSON to entries/<name>.json, and open a PR. See CONTRIBUTING.md for the full flow.
   - name: Request takedown of a listed entry
     url: https://github.com/lifebugz/ccpluginizer/blob/main/TAKEDOWN.md
     about: Source-repo authors who want their entry removed should follow the takedown process.

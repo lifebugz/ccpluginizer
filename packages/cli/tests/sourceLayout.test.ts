@@ -460,7 +460,7 @@ describe("resolveSourceLayout: the repo root's own conventional containers survi
 });
 
 describe("resolveSourceLayout: a relative repoRoot is canonicalized", () => {
-  // `ccpluginizer scan ./myrepo` hands createLayoutResolver a "./"-prefixed path verbatim;
+  // `ccpz scan ./myrepo` hands createLayoutResolver a "./"-prefixed path verbatim;
   // it must be resolved to absolute so the inside-skill parent walk terminates (otherwise
   // a relative root recurses toward the filesystem root and overflows the stack).
   test("a relative './<name>' repoRoot resolves the container without crashing", () => {

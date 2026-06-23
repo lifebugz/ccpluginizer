@@ -22,7 +22,7 @@ const tombstoned = new Set(
     .map((f) => f.replace(".json", "")),
 );
 
-// Same loader + validator as `ccpluginizer validate`: flattens array-shaped entry
+// Same loader + validator as `ccpz validate`: flattens array-shaped entry
 // files (a split scan emits several entries per file), enforces cross-entry name
 // uniqueness, and names the offending file in every error. An entries/ dir with no
 // files (e.g. the last entry just moved to tombstones/) builds an empty catalog.

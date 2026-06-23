@@ -1,4 +1,4 @@
-# @ccpluginizer/ccpluginizer
+# @ccpluginizer/ccpz
 
 > CLI for pluginizing non-plugin Claude Code repos.
 
@@ -11,9 +11,9 @@ ccpluginizer is **Bun-first**. Two co-equal ways to run it — pick whichever fi
 ### Bun (light)
 
 ```bash
-bun add -g @ccpluginizer/ccpluginizer
+bun add -g @ccpluginizer/ccpz
 # or one-shot, no install:
-bunx @ccpluginizer/ccpluginizer scan <owner/repo>
+bunx @ccpluginizer/ccpz scan <owner/repo>
 ```
 
 Don't have Bun? `curl -fsSL https://bun.sh/install | bash`.
@@ -26,27 +26,27 @@ required (the Bun runtime is embedded; ~60 MB):
 
 | Platform | Asset |
 |---|---|
-| macOS (Apple Silicon) | `ccpluginizer-darwin-arm64` |
-| Linux x64 | `ccpluginizer-linux-x64` |
-| Linux arm64 | `ccpluginizer-linux-arm64` |
-| Windows x64 | `ccpluginizer-windows-x64.exe` |
+| macOS (Apple Silicon) | `ccpz-darwin-arm64` |
+| Linux x64 | `ccpz-linux-x64` |
+| Linux arm64 | `ccpz-linux-arm64` |
+| Windows x64 | `ccpz-windows-x64.exe` |
 
 ```bash
 # macOS / Linux — mark executable, then run:
-chmod +x ccpluginizer-<os>-<arch>
+chmod +x ccpz-<os>-<arch>
 # macOS only: clear the Gatekeeper quarantine flag first (see the macOS note below)
-./ccpluginizer-<os>-<arch> scan <owner/repo>
+./ccpz-<os>-<arch> scan <owner/repo>
 
 # Windows (PowerShell or cmd) — run the .exe directly:
-.\ccpluginizer-windows-x64.exe scan <owner/repo>
+.\ccpz-windows-x64.exe scan <owner/repo>
 ```
 
 > **macOS:** the binaries are unsigned, so Gatekeeper quarantines them. Clear it
-> before running: `xattr -c ./ccpluginizer-darwin-arm64`.
+> before running: `xattr -c ./ccpz-darwin-arm64`.
 > **Windows:** the unsigned `.exe` triggers SmartScreen — choose *More info →
 > Run anyway*.
 
-> **Windows:** ccpluginizer's `bin/ccpluginizer` launcher is a POSIX shell script
+> **Windows:** the `bin/ccpz` launcher is a POSIX shell script
 > that doesn't run natively on Windows, so prefer this native binary over the Bun path.
 
 > **Node is not supported.** The CLI uses Bun-native APIs; running it under
@@ -55,8 +55,8 @@ chmod +x ccpluginizer-<os>-<arch>
 ## Usage
 
 ```bash
-ccpluginizer scan <owner/repo>     # Generate a marketplace entry
-ccpluginizer validate <entry.json> # Validate an entry against the schema
+ccpz scan <owner/repo>     # Generate a marketplace entry
+ccpz validate <entry.json> # Validate an entry against the schema
 ```
 
 To add a repo to the catalog, run `scan`, commit the JSON to `entries/<name>.json` in the catalog repo, and open a PR. See the catalog's [CONTRIBUTING.md](https://github.com/lifebugz/ccpluginizer/blob/main/CONTRIBUTING.md).

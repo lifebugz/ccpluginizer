@@ -46,12 +46,12 @@ export const scanCommand = new Crust("scan")
     const requestedCluster = normalizeStrategy(flags.cluster);
     const wantSplit = flags.split;
     if (!wantSplit && flags.umbrella) {
-      console.error("ccpluginizer: --umbrella is ignored with --no-split (the umbrella only exists on the split path).");
+      console.error("ccpz: --umbrella is ignored with --no-split (the umbrella only exists on the split path).");
     }
     const minSkills =
       Number.isFinite(flags.minSkills) && flags.minSkills >= 0 ? flags.minSkills : DEFAULT_MIN_SKILLS_TO_SPLIT;
     if (minSkills !== flags.minSkills) {
-      console.error(`ccpluginizer: invalid --min-skills ${String(flags.minSkills)}; using ${String(DEFAULT_MIN_SKILLS_TO_SPLIT)}.`);
+      console.error(`ccpz: invalid --min-skills ${String(flags.minSkills)}; using ${String(DEFAULT_MIN_SKILLS_TO_SPLIT)}.`);
     }
     const llmConfig = resolveLlmConfig({
       ...(flags.llmCmd !== undefined ? { llmCmd: flags.llmCmd } : {}),
@@ -111,7 +111,7 @@ export const scanCommand = new Crust("scan")
     if (wantSplit && !strategyUsesLlm(requestedCluster) && llmConfig.cmd !== undefined && splitCouldHaveUsedLlm) {
       const source = llmConfig.cmdFromEnv ? "CCPLUGINIZER_LLM_CMD" : "--llm-cmd";
       console.error(
-        `ccpluginizer: an LLM is configured (${source}) but --cluster=${requestedCluster} is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
+        `ccpz: an LLM is configured (${source}) but --cluster=${requestedCluster} is deterministic-only; pass --cluster=llm or --cluster=auto-llm to use it.`,
       );
     }
     // A split-suppressing marker silently outranks every strategy flag — say so when
@@ -123,7 +123,7 @@ export const scanCommand = new Crust("scan")
       (requestedCluster !== DEFAULT_STRATEGY || llmConfig.cmd !== undefined)
     ) {
       console.error(
-        "ccpluginizer: the committed .ccpluginizer.json curates a single entry, so --cluster/--llm-cmd were not consulted; remove the marker (or give it \"groups\") to re-enable splitting.",
+        "ccpz: the committed .ccpluginizer.json curates a single entry, so --cluster/--llm-cmd were not consulted; remove the marker (or give it \"groups\") to re-enable splitting.",
       );
     }
 
@@ -134,7 +134,7 @@ export const scanCommand = new Crust("scan")
       for (const warning of warnings) {
         if (!printedWarnings.has(warning)) {
           printedWarnings.add(warning);
-          console.error(`ccpluginizer: warning: ${warning}`);
+          console.error(`ccpz: warning: ${warning}`);
         }
       }
     };
@@ -161,17 +161,17 @@ export const scanCommand = new Crust("scan")
     if (flags.writeMarker) {
       if (result.marker === null) {
         console.error(
-          "ccpluginizer: --write-marker ignored — no split was emitted, so there is no grouping to freeze.",
+          "ccpz: --write-marker ignored — no split was emitted, so there is no grouping to freeze.",
         );
       } else if (parseSourceInput(args.repo).kind !== "local") {
         console.error(
-          "ccpluginizer: --write-marker only works on a local path; a github/URL source is cloned to a temp dir that is discarded. Clone the repo locally, re-run `scan <path> --write-marker`, then commit .ccpluginizer.json.",
+          "ccpz: --write-marker only works on a local path; a github/URL source is cloned to a temp dir that is discarded. Clone the repo locally, re-run `scan <path> --write-marker`, then commit .ccpluginizer.json.",
         );
       } else {
         const markerPath = join(repoPath, ".ccpluginizer.json");
         const merged = serializeMarkerDraft(result.marker, result.existingMarker);
         writeFileSync(markerPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
-        console.error(`ccpluginizer: wrote frozen split to ${markerPath}`);
+        console.error(`ccpz: wrote frozen split to ${markerPath}`);
       }
     }
 
@@ -220,7 +220,7 @@ export function resolveLlmConfig(
   const valid = Number.isFinite(resolvedSeconds) && resolvedSeconds > 0;
   if (!valid && (flags.llmTimeout !== undefined || envTimeout !== undefined)) {
     // Mirror --min-skills: an explicitly configured but unusable value is corrected loudly.
-    console.error(`ccpluginizer: invalid LLM timeout ${String(resolvedSeconds)}; using ${String(DEFAULT_TIMEOUT_SECONDS)}s.`);
+    console.error(`ccpz: invalid LLM timeout ${String(resolvedSeconds)}; using ${String(DEFAULT_TIMEOUT_SECONDS)}s.`);
   }
   const safeSeconds = valid ? Math.min(resolvedSeconds, MAX_TIMEOUT_SECONDS) : DEFAULT_TIMEOUT_SECONDS;
 
@@ -291,7 +291,7 @@ export function printSplitNotice(result: SynthesizeEntriesResult): void {
   const entryCount = result.entries.length;
   const via = describeProvenance(result.provenance);
   console.error(
-    `ccpluginizer: split into ${String(entryCount)} ${entryCount === 1 ? "entry" : "entries"} (${parts.join(" + ")}) ${via}. Use --no-split for a single entry.`,
+    `ccpz: split into ${String(entryCount)} ${entryCount === 1 ? "entry" : "entries"} (${parts.join(" + ")}) ${via}. Use --no-split for a single entry.`,
   );
 }
 
@@ -301,7 +301,7 @@ export function printNoSplitNotice(requestedCluster: ClusterStrategy, llmFailure
       ? `${llmFailureReason(llmFailure)}, and no clean deterministic partition`
       : "no clean deterministic partition";
   console.error(
-    `ccpluginizer: --cluster=${requestedCluster} produced no split — ${reason}; emitting a single entry.`,
+    `ccpz: --cluster=${requestedCluster} produced no split — ${reason}; emitting a single entry.`,
   );
 }
 
@@ -320,7 +320,7 @@ export async function reviewSplit(
   if (result.split === null || result.provenance.kind === "none" || result.provenance.kind === "skipped") {
     return result; // nothing to review — callers only invoke this on a fired split
   }
-  console.error(`ccpluginizer: proposed split — ${describeProvenance(result.provenance)}`);
+  console.error(`ccpz: proposed split — ${describeProvenance(result.provenance)}`);
   for (const g of result.marker?.groups ?? []) {
     console.error(`  ${g.slug}: ${String(g.skills.length)} skills`);
   }
@@ -341,7 +341,7 @@ export async function reviewSplit(
     existingMarker: result.existingMarker,
     caches: result.caches,
   });
-  console.error("ccpluginizer: split declined; emitting a single entry.");
+  console.error("ccpz: split declined; emitting a single entry.");
   return single;
 }
 
@@ -359,7 +359,7 @@ function emitOutput(
   if (flags.outDir !== undefined) {
     if (flags.output !== undefined) {
       console.error(
-        "ccpluginizer: both --out-dir and --output given; --output is ignored (writing one file per entry into the directory).",
+        "ccpz: both --out-dir and --output given; --output is ignored (writing one file per entry into the directory).",
       );
     }
     mkdirSync(flags.outDir, { recursive: true });
@@ -367,7 +367,7 @@ function emitOutput(
       writeFileSync(join(flags.outDir, `${entry.name}.json`), JSON.stringify(entry, null, 2) + "\n", "utf8");
     }
     warnAboutStaleEntries(entries, flags.outDir, sourceRepo);
-    console.error(`ccpluginizer: wrote ${String(entries.length)} entr${entries.length === 1 ? "y" : "ies"} to ${flags.outDir}`);
+    console.error(`ccpz: wrote ${String(entries.length)} entr${entries.length === 1 ? "y" : "ies"} to ${flags.outDir}`);
     return;
   }
   // Single object only on the un-split path (byte-identical to pre-split output);
@@ -412,7 +412,7 @@ function warnAboutStaleEntries(
     .sort();
   if (stale.length > 0) {
     console.error(
-      `ccpluginizer: warning: ${String(stale.length)} entry file(s) from a previous scan of this repo remain in ${outDir}: ${stale.join(", ")}. Delete them if this regrouping replaced them.`,
+      `ccpz: warning: ${String(stale.length)} entry file(s) from a previous scan of this repo remain in ${outDir}: ${stale.join(", ")}. Delete them if this regrouping replaced them.`,
     );
   }
 }

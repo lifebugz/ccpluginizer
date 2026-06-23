@@ -10,7 +10,7 @@ I aim to acknowledge reports within 5 business days. High-severity issues affect
 
 ## In scope
 
-- Bugs in `@ccpluginizer/ccpluginizer` (command injection, path traversal, prototype pollution, etc.)
+- Bugs in `@ccpluginizer/ccpz` (command injection, path traversal, prototype pollution, etc.)
 - Flaws in the marketplace schema parsing or in `scripts/build-marketplace.ts`
 - Entries in `entries/` that point at a known-malicious source repo (we will tombstone them)
 - CI workflows that could be abused (e.g., to publish or push from an untrusted PR)
