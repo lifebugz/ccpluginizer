@@ -1,4 +1,4 @@
-# @ccpluginizer/ccpluginizer
+# @ccpluginizer/ccpz
 
 ## 0.7.0
 
