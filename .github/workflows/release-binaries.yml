@@ -132,7 +132,22 @@ jobs:
           git add Formula/ccpz.rb
           git diff --cached --quiet && { echo "formula unchanged"; exit 0; }
           git commit -m "ccpz ${VERSION}"
-          # The job-level concurrency group already serializes tap pushes; this
-          # rebase-retry is a cheap secondary guard. A conflicting rebase fails the
-          # job; an idempotent re-run fixes it.
-          git push origin HEAD:main || { git pull --rebase origin main && git push origin HEAD:main; }
+          # The job-level concurrency group already serializes tap pushes, so the
+          # first push normally fast-forwards. The loop is a secondary guard for the
+          # one case the group can't cover: an EXTERNAL writer advancing the tap's
+          # main between this checkout and the push. Recovery RE-RENDERS the formula
+          # onto the fetched tip (the formula is a pure function of version+digests,
+          # so a full-file overwrite — never a three-way merge — which can't hit a
+          # content conflict the way `pull --rebase` would on this single file).
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git fetch origin main
+            git reset --soft origin/main   # move HEAD onto the live tip, keep the worktree
+            bash "$GITHUB_WORKSPACE/scripts/render-brew-formula.sh" "$VERSION" \
+              "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > Formula/ccpz.rb
+            ruby -c Formula/ccpz.rb
+            git add Formula/ccpz.rb
+            git diff --cached --quiet && { echo "formula already current on tap"; exit 0; }
+            git commit -m "ccpz ${VERSION}"
+          done
+          echo "::error::could not push formula after 3 attempts"; exit 1
