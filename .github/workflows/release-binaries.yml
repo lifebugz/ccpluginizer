@@ -116,12 +116,16 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           VERSION="${TAG#@ccpluginizer/ccpz@}"
+          # Fetch the asset list ONCE — every digest comes from the same payload, so
+          # three `gh release view` round-trips would just re-download it. `|| true` so a
+          # gh/release error (e.g. missing tag) falls through to the explicit guard below
+          # instead of aborting on gh's raw error under `set -e`.
+          ASSETS="$(gh release view "$TAG" --repo "$REPO" --json assets || true)"
           read_digest() {
-            gh release view "$TAG" --repo "$REPO" --json assets \
-              --jq ".assets[] | select(.name==\"$1\") | .digest | ltrimstr(\"sha256:\")"
+            jq -r ".assets[] | select(.name==\"$1\") | .digest | ltrimstr(\"sha256:\")" <<<"$ASSETS"
           }
-          # `|| true` so a gh/release error (e.g. missing tag) falls through to the
-          # explicit guard below instead of aborting on gh's raw error under `set -e`.
+          # `|| true` guards jq too: an empty/invalid $ASSETS makes jq exit non-zero,
+          # which would otherwise trip `set -e` before the digest guard can run.
           SHA_DARWIN_ARM64="$(read_digest ccpz-darwin-arm64 || true)"
           SHA_LINUX_X64="$(read_digest ccpz-linux-x64 || true)"
           SHA_LINUX_ARM64="$(read_digest ccpz-linux-arm64 || true)"
@@ -162,6 +166,11 @@ jobs:
             # the formula is byte-identical. `--hard` discards nothing we need: the very
             # next line re-renders Formula/ccpz.rb from scratch.
             git reset --hard origin/main || return 1
+            # `reset --hard` onto a tip that tracks no file under Formula/ leaves no
+            # Formula/ dir (the main-path commit's Formula/ccpz.rb is gone), so the
+            # redirect below would fail "No such file or directory" and burn every
+            # retry. Recreate it, mirroring the main path's `mkdir -p tap/Formula`.
+            mkdir -p Formula || return 1
             bash "$GITHUB_WORKSPACE/scripts/render-brew-formula.sh" "$VERSION" \
               "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > Formula/ccpz.rb || return 1
             ruby -c Formula/ccpz.rb || return 1
