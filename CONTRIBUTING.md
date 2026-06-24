@@ -11,6 +11,8 @@ Thanks for adding to ccpluginizer's catalog. The flow below covers the common ca
    ccpz scan <owner/repo>
    # Or one-shot without installing:
    bunx @ccpluginizer/ccpz scan <owner/repo>
+   # Or via Homebrew (macOS arm64, Linux x64/arm64):
+   #   brew install lifebugz/tap/ccpz
    ```
 
 2. Fork this repo, save the output to `entries/<name>.json`, and verify it merges cleanly:

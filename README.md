@@ -23,21 +23,26 @@ Auto-update happens for free. Entries omit `version` fields, so Claude Code fall
 
 ## CLI
 
-ccpluginizer is **Bun-first**, with two co-equal install paths:
+ccpluginizer is **Bun-first**, with three install paths:
 
 ```bash
 # Bun (light):
 bun add -g @ccpluginizer/ccpz            # global
 bunx @ccpluginizer/ccpz scan <owner/repo> # one-shot, no install
 
+# Homebrew (macOS arm64, Linux x64/arm64):
+brew install lifebugz/tap/ccpz
+
 # Native binary (self-contained, no runtime needed):
 # download ccpz-<os>-<arch> from https://github.com/lifebugz/ccpluginizer/releases
 # (unsigned: macOS `xattr -c ./ccpz-<os>-<arch>`, Windows SmartScreen "Run anyway")
 ```
 
-**Windows** users should use the `windows-x64` native binary (ccpluginizer's
-`bin/ccpz` launcher is a POSIX shell script that doesn't run natively on
-Windows). **Node is not supported** — the CLI uses Bun-native APIs.
+**Homebrew** covers macOS **arm64** (Apple Silicon) and Linux (**x64**/**arm64**).
+On **Intel macOS** Homebrew is not supported — use the Bun path. **Windows** users
+should use the `windows-x64` native binary (ccpluginizer's `bin/ccpz` launcher is a
+POSIX shell script that doesn't run natively on Windows). **Node is not supported** —
+the CLI uses Bun-native APIs.
 
 Then run:
 

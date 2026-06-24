@@ -69,3 +69,151 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           gh release upload "$TAG" "${{ matrix.asset }}" --clobber --repo "$REPO"
+
+  publish-formula:
+    needs: build
+    # Run whenever `build` was not cancelled AND the tag matches — NOT gated on every
+    # matrix leg succeeding. With a bare `if: startsWith(...)` (no status function) the
+    # default `success()` still applies to the `needs: build` edge, so ONE failed leg —
+    # including the formula-irrelevant `windows-x64` leg — would silently SKIP the tap
+    # publish even though all three Homebrew assets (darwin-arm64, linux-x64,
+    # linux-arm64) uploaded fine. `!cancelled()` lets the job run on a partial build;
+    # the per-asset digest guard in the step below then fails CLEARLY (`::error`) if a
+    # formula-relevant asset is actually missing, instead of vanishing as a skip.
+    if: ${{ !cancelled() && startsWith(github.event.release.tag_name, '@ccpluginizer/ccpz@') }}
+    runs-on: ubuntu-latest
+    # Serialize ALL tap pushes across versions so two releases can never race on
+    # homebrew-tap@main (not keyed by tag, unlike the workflow-level group). With
+    # cancel-in-progress: false an in-progress push always runs to completion (no torn
+    # write) and a newer arrival QUEUES behind it rather than cancelling it; GitHub
+    # keeps only the most-recent run pending and cancels any older still-pending ones,
+    # so the tap ultimately converges to the latest version.
+    concurrency:
+      group: ccpz-homebrew-tap-push
+      cancel-in-progress: false
+    permissions:
+      contents: read          # read THIS repo's release-asset digests via GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v6           # for scripts/render-brew-formula.sh
+      - name: Generate App token for the tap repo
+        id: tap-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: lifebugz
+          repositories: homebrew-tap
+      - name: Check out the tap (keeps the token out of a hand-built URL / .git/config)
+        uses: actions/checkout@v6
+        with:
+          repository: lifebugz/homebrew-tap
+          token: ${{ steps.tap-token.outputs.token }}
+          path: tap
+      - name: Render + commit + push formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION="${TAG#@ccpluginizer/ccpz@}"
+          # Fetch the asset list ONCE — every digest comes from the same payload, so
+          # three `gh release view` round-trips would just re-download it. `|| true` so a
+          # gh/release error (e.g. missing tag) falls through to the explicit guard below
+          # instead of aborting on gh's raw error under `set -e`.
+          ASSETS="$(gh release view "$TAG" --repo "$REPO" --json assets || true)"
+          read_digest() {
+            jq -r ".assets[] | select(.name==\"$1\") | .digest | ltrimstr(\"sha256:\")" <<<"$ASSETS"
+          }
+          # `|| true` guards jq too: an empty/invalid $ASSETS makes jq exit non-zero,
+          # which would otherwise trip `set -e` before the digest guard can run.
+          SHA_DARWIN_ARM64="$(read_digest ccpz-darwin-arm64 || true)"
+          SHA_LINUX_X64="$(read_digest ccpz-linux-x64 || true)"
+          SHA_LINUX_ARM64="$(read_digest ccpz-linux-arm64 || true)"
+          for v in "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64"; do
+            [ -n "$v" ] || { echo "::error::missing asset digest (release/tag incomplete?)"; exit 1; }
+          done
+          # Single source of truth for the version+digest render invocation, shared by
+          # the main path below and recover_onto_tip — so the two can never drift (e.g.
+          # a 4th digest added to one only). Every line guards with `|| return 1`: when
+          # this is called as `render_formula … || return 1`, bash turns OFF `set -e`
+          # inside the function, so these explicit guards (not `set -e`) are what abort
+          # a failed render / broken Ruby instead of silently writing a bad formula.
+          RENDER="$GITHUB_WORKSPACE/scripts/render-brew-formula.sh"
+          render_formula() {   # $1 = destination path, relative to cwd
+            bash "$RENDER" "$VERSION" "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > "$1" || return 1
+            ruby -c "$1" || return 1   # never push syntactically broken Ruby (ubuntu has ruby preinstalled)
+          }
+          mkdir -p tap/Formula
+          render_formula tap/Formula/ccpz.rb
+          cd tap
+          git config user.name  "ccpluginizer-release-bot[bot]"
+          git config user.email "283500925+ccpluginizer-release-bot[bot]@users.noreply.github.com"
+          git add Formula/ccpz.rb
+          git diff --cached --quiet && { echo "formula unchanged"; exit 0; }
+          git commit -m "ccpz ${VERSION}"
+          # The job-level concurrency group already serializes tap pushes, so the
+          # first push normally fast-forwards. The loop is a secondary guard for the
+          # one case the group can't cover: an EXTERNAL writer advancing the tap's
+          # main between this checkout and the push. Recovery RE-RENDERS the formula
+          # onto the fetched tip (the formula is a pure function of version+digests,
+          # so a full-file overwrite — never a three-way merge — which can't hit a
+          # content conflict the way `pull --rebase` would on this single file).
+          #
+          # Recovery runs inside `recover_onto_tip`; each step is `|| return N` so a
+          # TRANSIENT error in fetch/reset/render (the very failures this loop exists
+          # to survive) returns a status the caller captures, instead of a bare
+          # `git fetch` non-zero exit killing the whole step under `set -e` before
+          # attempts 2-3 ever run. Return 2 = "tap already current"; non-zero = retry.
+          recover_onto_tip() {
+            # Re-fetch even though push_published already fetched this iteration: our
+            # push was just REJECTED because the remote advanced past the tip
+            # push_published saw, so we must read the NEWER tip before resetting onto
+            # it. Not a redundant round-trip — each fetch reads a distinct tip.
+            git fetch origin main || return 1
+            # `--hard` (not `--soft`): land BOTH HEAD and the worktree on the live tip,
+            # then re-render. A `--soft` reset leaves the stale worktree behind, so any
+            # NON-Formula file the external writer added to the tip (README, a second
+            # formula, .github/) would be staged for DELETION by the `git add` below —
+            # the recovery commit would silently revert that writer's change, and the
+            # `git diff --cached --quiet` no-op short-circuit would never fire even when
+            # the formula is byte-identical. `--hard` discards nothing we need: the very
+            # next line re-renders Formula/ccpz.rb from scratch.
+            git reset --hard origin/main || return 1
+            # `reset --hard` onto a tip that tracks no file under Formula/ leaves no
+            # Formula/ dir (the main-path commit's Formula/ccpz.rb is gone), so
+            # render_formula's redirect would fail "No such file or directory" and burn
+            # every retry. Recreate it, mirroring the main path's `mkdir -p tap/Formula`.
+            mkdir -p Formula || return 1
+            render_formula Formula/ccpz.rb || return 1
+            git add Formula/ccpz.rb || return 1
+            git diff --cached --quiet && { echo "formula already current on tap"; return 2; }
+            git commit -m "ccpz ${VERSION}" || return 1
+          }
+          # Only treat a push as a successful publish when HEAD is actually a NEW
+          # commit ahead of origin/main. If recovery aborts AFTER `git reset --hard
+          # origin/main` but BEFORE `git commit` (a transient render/ruby/add/commit
+          # failure — the very class this loop exists to survive), HEAD is left equal
+          # to the fetched tip with nothing committed; a bare `git push origin
+          # HEAD:main` then prints "Everything up-to-date" and exits 0, which a plain
+          # `&& exit 0` would misread as "published" — silently shipping a release with
+          # NO formula update. This guard fetches the live tip and refuses to declare
+          # success unless our commit is genuinely ahead of it.
+          push_published() {
+            git fetch origin main || return 1
+            git merge-base --is-ancestor HEAD origin/main && return 1   # HEAD already on tip → nothing to publish
+            git push origin HEAD:main
+          }
+          for attempt in 1 2 3; do
+            push_published && exit 0
+            # `rc=0; recover_onto_tip || rc=$?` — capturing via `||` keeps a non-zero
+            # return from tripping `set -e` (a bare `recover_onto_tip; rc=$?` would
+            # abort the step at the call before `$?` is read).
+            rc=0; recover_onto_tip || rc=$?
+            [ "$rc" -eq 2 ] && exit 0   # external writer already published this exact formula
+            [ "$rc" -eq 0 ] || echo "::warning::recovery attempt ${attempt} failed (rc=${rc}), retrying"
+          done
+          # Final attempt: the commit re-rendered onto the latest tip by the 3rd
+          # recovery. push_published still refuses a no-op, so this can only exit 0
+          # when a real formula commit reached the tap.
+          push_published && exit 0
+          echo "::error::could not push formula after 3 attempts"; exit 1
