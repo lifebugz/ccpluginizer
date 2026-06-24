@@ -250,7 +250,7 @@ jobs:
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: lifebugz
           repositories: homebrew-tap
-      - name: Check out the tap (read-only here; proves the token can reach it)
+      - name: Check out the tap (proves the token can reach it; no push is invoked here)
         uses: actions/checkout@v6
         with:
           repository: lifebugz/homebrew-tap
@@ -268,6 +268,9 @@ jobs:
           # TEMPLATE still renders and passes `ruby -c`. This job validates the token +
           # tap checkout + render plumbing, NOT digest correctness, so a tag without
           # assets (e.g. the default dry-run version) must NOT fail it.
+          # NOTE: the asset-name list + read_digest jq below mirror publish-formula's
+          # digest read — keep them in sync if that job's asset names or the render
+          # script's signature ever change, or this smoke test validates stale plumbing.
           ASSETS="$(gh release view "$TAG" --repo "$REPO" --json assets 2>/dev/null || true)"
           read_digest() {
             jq -r ".assets[] | select(.name==\"$1\") | .digest | ltrimstr(\"sha256:\")" <<<"$ASSETS" 2>/dev/null
@@ -282,4 +285,8 @@ jobs:
             "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > tap/Formula/ccpz.rb
           ruby -c tap/Formula/ccpz.rb   # validate the rendered Ruby (ubuntu has ruby preinstalled)
           echo "::notice::dry-run OK — token minted, tap checked out, formula rendered and ruby -c clean. Diff vs tap main:"
-          cd tap && git --no-pager diff -- Formula/ccpz.rb || true
+          # `cd` on its own line (not `cd tap && … || true`): a failed cd must FAIL the
+          # job, not be masked as success — proving the tap checkout is the point of this
+          # smoke test. `git diff` (no --exit-code) returns 0 even when the formula differs.
+          cd tap
+          git --no-pager diff -- Formula/ccpz.rb
