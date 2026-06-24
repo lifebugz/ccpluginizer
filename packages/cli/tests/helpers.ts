@@ -145,14 +145,14 @@ export function curatedEnv(extra: Record<string, string> = {}): Record<string, s
   };
 }
 
-/** Spawn the CLI's scan command hermetically and collect its output. */
-export async function runScan(
-  scanArgs: string[],
+/** Spawn the CLI hermetically with arbitrary argv and collect its output. */
+export async function runCli(
+  args: string[],
   opts: { env?: Record<string, string> } = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   // Launch via the absolute interpreter path; Bun resolves argv[0] against the child PATH,
   // so a bare "bun" token with a stripped PATH would throw ENOENT before the CLI runs.
-  const proc = Bun.spawn([process.execPath, "run", CLI, "scan", ...scanArgs], {
+  const proc = Bun.spawn([process.execPath, "run", CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     env: curatedEnv(opts.env),
@@ -161,4 +161,12 @@ export async function runScan(
   const stderr = await new Response(proc.stderr).text();
   const code = await proc.exited;
   return { stdout, stderr, code };
+}
+
+/** Spawn the CLI's scan command hermetically and collect its output. */
+export async function runScan(
+  scanArgs: string[],
+  opts: { env?: Record<string, string> } = {},
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  return runCli(["scan", ...scanArgs], opts);
 }
