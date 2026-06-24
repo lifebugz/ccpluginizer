@@ -153,7 +153,15 @@ jobs:
           # attempts 2-3 ever run. Return 2 = "tap already current"; non-zero = retry.
           recover_onto_tip() {
             git fetch origin main || return 1
-            git reset --soft origin/main || return 1   # move HEAD onto the live tip, keep the worktree
+            # `--hard` (not `--soft`): land BOTH HEAD and the worktree on the live tip,
+            # then re-render. A `--soft` reset leaves the stale worktree behind, so any
+            # NON-Formula file the external writer added to the tip (README, a second
+            # formula, .github/) would be staged for DELETION by the `git add` below —
+            # the recovery commit would silently revert that writer's change, and the
+            # `git diff --cached --quiet` no-op short-circuit would never fire even when
+            # the formula is byte-identical. `--hard` discards nothing we need: the very
+            # next line re-renders Formula/ccpz.rb from scratch.
+            git reset --hard origin/main || return 1
             bash "$GITHUB_WORKSPACE/scripts/render-brew-formula.sh" "$VERSION" \
               "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > Formula/ccpz.rb || return 1
             ruby -c Formula/ccpz.rb || return 1
@@ -162,7 +170,7 @@ jobs:
             git commit -m "ccpz ${VERSION}" || return 1
           }
           # Only treat a push as a successful publish when HEAD is actually a NEW
-          # commit ahead of origin/main. If recovery aborts AFTER `git reset --soft
+          # commit ahead of origin/main. If recovery aborts AFTER `git reset --hard
           # origin/main` but BEFORE `git commit` (a transient render/ruby/add/commit
           # failure — the very class this loop exists to survive), HEAD is left equal
           # to the fetched tip with nothing committed; a bare `git push origin
