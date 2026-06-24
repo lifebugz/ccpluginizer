@@ -9,7 +9,14 @@ set -euo pipefail
 # ongoing regression guard.
 #
 # Usage: render-brew-formula.sh <version> <sha_darwin_arm64> <sha_linux_x64> <sha_linux_arm64>
-VERSION="$1"; SHA_DARWIN_ARM64="$2"; SHA_LINUX_X64="$3"; SHA_LINUX_ARM64="$4"
+# Reject empty/missing args up front: `set -u` already trips on too-FEW args, but an
+# explicit empty string (e.g. a local bootstrap call with a blank digest) would slip
+# through and render `sha256 ""`, which passes `ruby -c` yet fails `brew install` with
+# an opaque checksum error. `:?` fails fast with a clear message instead.
+VERSION="${1:?version required}"
+SHA_DARWIN_ARM64="${2:?darwin-arm64 sha256 required}"
+SHA_LINUX_X64="${3:?linux-x64 sha256 required}"
+SHA_LINUX_ARM64="${4:?linux-arm64 sha256 required}"
 
 cat <<RUBY
 class Ccpz < Formula

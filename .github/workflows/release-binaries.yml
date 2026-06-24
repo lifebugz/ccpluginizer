@@ -132,10 +132,19 @@ jobs:
           for v in "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64"; do
             [ -n "$v" ] || { echo "::error::missing asset digest (release/tag incomplete?)"; exit 1; }
           done
+          # Single source of truth for the version+digest render invocation, shared by
+          # the main path below and recover_onto_tip — so the two can never drift (e.g.
+          # a 4th digest added to one only). Every line guards with `|| return 1`: when
+          # this is called as `render_formula … || return 1`, bash turns OFF `set -e`
+          # inside the function, so these explicit guards (not `set -e`) are what abort
+          # a failed render / broken Ruby instead of silently writing a bad formula.
+          RENDER="$GITHUB_WORKSPACE/scripts/render-brew-formula.sh"
+          render_formula() {   # $1 = destination path, relative to cwd
+            bash "$RENDER" "$VERSION" "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > "$1" || return 1
+            ruby -c "$1" || return 1   # never push syntactically broken Ruby (ubuntu has ruby preinstalled)
+          }
           mkdir -p tap/Formula
-          bash scripts/render-brew-formula.sh "$VERSION" \
-            "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > tap/Formula/ccpz.rb
-          ruby -c tap/Formula/ccpz.rb   # never push syntactically broken Ruby (ubuntu has ruby preinstalled)
+          render_formula tap/Formula/ccpz.rb
           cd tap
           git config user.name  "ccpluginizer-release-bot[bot]"
           git config user.email "283500925+ccpluginizer-release-bot[bot]@users.noreply.github.com"
@@ -156,6 +165,10 @@ jobs:
           # `git fetch` non-zero exit killing the whole step under `set -e` before
           # attempts 2-3 ever run. Return 2 = "tap already current"; non-zero = retry.
           recover_onto_tip() {
+            # Re-fetch even though push_published already fetched this iteration: our
+            # push was just REJECTED because the remote advanced past the tip
+            # push_published saw, so we must read the NEWER tip before resetting onto
+            # it. Not a redundant round-trip — each fetch reads a distinct tip.
             git fetch origin main || return 1
             # `--hard` (not `--soft`): land BOTH HEAD and the worktree on the live tip,
             # then re-render. A `--soft` reset leaves the stale worktree behind, so any
@@ -167,13 +180,11 @@ jobs:
             # next line re-renders Formula/ccpz.rb from scratch.
             git reset --hard origin/main || return 1
             # `reset --hard` onto a tip that tracks no file under Formula/ leaves no
-            # Formula/ dir (the main-path commit's Formula/ccpz.rb is gone), so the
-            # redirect below would fail "No such file or directory" and burn every
-            # retry. Recreate it, mirroring the main path's `mkdir -p tap/Formula`.
+            # Formula/ dir (the main-path commit's Formula/ccpz.rb is gone), so
+            # render_formula's redirect would fail "No such file or directory" and burn
+            # every retry. Recreate it, mirroring the main path's `mkdir -p tap/Formula`.
             mkdir -p Formula || return 1
-            bash "$GITHUB_WORKSPACE/scripts/render-brew-formula.sh" "$VERSION" \
-              "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > Formula/ccpz.rb || return 1
-            ruby -c Formula/ccpz.rb || return 1
+            render_formula Formula/ccpz.rb || return 1
             git add Formula/ccpz.rb || return 1
             git diff --cached --quiet && { echo "formula already current on tap"; return 2; }
             git commit -m "ccpz ${VERSION}" || return 1
