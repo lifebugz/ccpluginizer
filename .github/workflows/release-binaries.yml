@@ -3,6 +3,16 @@ name: release-binaries
 on:
   release:
     types: [published]
+  # Manual smoke test of the tap-publish plumbing. Fires ONLY the dry-run-formula job
+  # below; build + publish-formula skip on a manual run because they gate on
+  # github.event.release.tag_name, which is empty for workflow_dispatch. Never pushes.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "ccpz release tag to render. Default is a throwaway dry-run version; pass a real @ccpluginizer/ccpz@X.Y.Z to pull that release's real digests."
+        required: false
+        default: "@ccpluginizer/ccpz@0.0.0-dryrun"
+        type: string
 
 # Deny-all by default; the build job below opts into the single scope it needs.
 permissions: {}
@@ -217,3 +227,59 @@ jobs:
           # when a real formula commit reached the tap.
           push_published && exit 0
           echo "::error::could not push formula after 3 attempts"; exit 1
+
+  dry-run-formula:
+    # Manual smoke test (workflow_dispatch only): proves the tap-publish PLUMBING works
+    # WITHOUT cutting a release or pushing. It mints the release-bot token, checks out
+    # the tap, renders Formula/ccpz.rb via the shared script, validates it with
+    # `ruby -c`, and prints the diff vs the tap's current formula — then stops. It never
+    # commits or pushes. The real publish path (build + publish-formula) is untouched
+    # and still fires only on `release: published`; both skip here because
+    # github.event.release.tag_name is empty on a manual run.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read          # read THIS repo's release-asset digests via GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v6           # for scripts/render-brew-formula.sh
+      - name: Generate App token for the tap repo
+        id: tap-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: lifebugz
+          repositories: homebrew-tap
+      - name: Check out the tap (read-only here; proves the token can reach it)
+        uses: actions/checkout@v6
+        with:
+          repository: lifebugz/homebrew-tap
+          token: ${{ steps.tap-token.outputs.token }}
+          path: tap
+      - name: Render + validate the formula (NO commit, NO push)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION="${TAG#@ccpluginizer/ccpz@}"
+          # Best-effort real digests: if the chosen tag's release carries the uploaded
+          # assets, render with them; otherwise fall back to a zero placeholder so the
+          # TEMPLATE still renders and passes `ruby -c`. This job validates the token +
+          # tap checkout + render plumbing, NOT digest correctness, so a tag without
+          # assets (e.g. the default dry-run version) must NOT fail it.
+          ASSETS="$(gh release view "$TAG" --repo "$REPO" --json assets 2>/dev/null || true)"
+          read_digest() {
+            jq -r ".assets[] | select(.name==\"$1\") | .digest | ltrimstr(\"sha256:\")" <<<"$ASSETS" 2>/dev/null
+          }
+          PLACEHOLDER="0000000000000000000000000000000000000000000000000000000000000000"
+          SHA_DARWIN_ARM64="$(read_digest ccpz-darwin-arm64 || true)"; SHA_DARWIN_ARM64="${SHA_DARWIN_ARM64:-$PLACEHOLDER}"
+          SHA_LINUX_X64="$(read_digest ccpz-linux-x64 || true)";       SHA_LINUX_X64="${SHA_LINUX_X64:-$PLACEHOLDER}"
+          SHA_LINUX_ARM64="$(read_digest ccpz-linux-arm64 || true)";   SHA_LINUX_ARM64="${SHA_LINUX_ARM64:-$PLACEHOLDER}"
+          [ "$SHA_DARWIN_ARM64" = "$PLACEHOLDER" ] && echo "::notice::no uploaded assets for ${TAG} — rendering with placeholder digests (plumbing test only)"
+          mkdir -p tap/Formula
+          bash scripts/render-brew-formula.sh "$VERSION" \
+            "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > tap/Formula/ccpz.rb
+          ruby -c tap/Formula/ccpz.rb   # validate the rendered Ruby (ubuntu has ruby preinstalled)
+          echo "::notice::dry-run OK — token minted, tap checked out, formula rendered and ruby -c clean. Diff vs tap main:"
+          cd tap && git --no-pager diff -- Formula/ccpz.rb || true
