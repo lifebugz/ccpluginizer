@@ -72,16 +72,22 @@ jobs:
 
   publish-formula:
     needs: build
-    # Redundant guard: `build` carries the same `if:`, so a non-matching tag already
-    # skips `build` and a skipped `needs` dependency skips this job too. Kept as
-    # explicit documentation of intent / a guard against future job decoupling.
-    if: startsWith(github.event.release.tag_name, '@ccpluginizer/ccpz@')
+    # Run whenever `build` was not cancelled AND the tag matches — NOT gated on every
+    # matrix leg succeeding. With a bare `if: startsWith(...)` (no status function) the
+    # default `success()` still applies to the `needs: build` edge, so ONE failed leg —
+    # including the formula-irrelevant `windows-x64` leg — would silently SKIP the tap
+    # publish even though all three Homebrew assets (darwin-arm64, linux-x64,
+    # linux-arm64) uploaded fine. `!cancelled()` lets the job run on a partial build;
+    # the per-asset digest guard in the step below then fails CLEARLY (`::error`) if a
+    # formula-relevant asset is actually missing, instead of vanishing as a skip.
+    if: ${{ !cancelled() && startsWith(github.event.release.tag_name, '@ccpluginizer/ccpz@') }}
     runs-on: ubuntu-latest
     # Serialize ALL tap pushes across versions so two releases can never race on
     # homebrew-tap@main (not keyed by tag, unlike the workflow-level group). With
-    # cancel-in-progress: false an in-progress push always completes (no torn write);
-    # a newer arrival cancels and replaces the older pending one, so the tap
-    # converges to the latest version.
+    # cancel-in-progress: false an in-progress push always runs to completion (no torn
+    # write) and a newer arrival QUEUES behind it rather than cancelling it; GitHub
+    # keeps only the most-recent run pending and cancels any older still-pending ones,
+    # so the tap ultimately converges to the latest version.
     concurrency:
       group: ccpz-homebrew-tap-push
       cancel-in-progress: false
@@ -139,15 +145,31 @@ jobs:
           # onto the fetched tip (the formula is a pure function of version+digests,
           # so a full-file overwrite — never a three-way merge — which can't hit a
           # content conflict the way `pull --rebase` would on this single file).
+          #
+          # Recovery runs inside `recover_onto_tip`; each step is `|| return N` so a
+          # TRANSIENT error in fetch/reset/render (the very failures this loop exists
+          # to survive) returns a status the caller captures, instead of a bare
+          # `git fetch` non-zero exit killing the whole step under `set -e` before
+          # attempts 2-3 ever run. Return 2 = "tap already current"; non-zero = retry.
+          recover_onto_tip() {
+            git fetch origin main || return 1
+            git reset --soft origin/main || return 1   # move HEAD onto the live tip, keep the worktree
+            bash "$GITHUB_WORKSPACE/scripts/render-brew-formula.sh" "$VERSION" \
+              "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > Formula/ccpz.rb || return 1
+            ruby -c Formula/ccpz.rb || return 1
+            git add Formula/ccpz.rb || return 1
+            git diff --cached --quiet && { echo "formula already current on tap"; return 2; }
+            git commit -m "ccpz ${VERSION}" || return 1
+          }
           for attempt in 1 2 3; do
             git push origin HEAD:main && exit 0
-            git fetch origin main
-            git reset --soft origin/main   # move HEAD onto the live tip, keep the worktree
-            bash "$GITHUB_WORKSPACE/scripts/render-brew-formula.sh" "$VERSION" \
-              "$SHA_DARWIN_ARM64" "$SHA_LINUX_X64" "$SHA_LINUX_ARM64" > Formula/ccpz.rb
-            ruby -c Formula/ccpz.rb
-            git add Formula/ccpz.rb
-            git diff --cached --quiet && { echo "formula already current on tap"; exit 0; }
-            git commit -m "ccpz ${VERSION}"
+            # `rc=0; recover_onto_tip || rc=$?` — capturing via `||` keeps a non-zero
+            # return from tripping `set -e` (a bare `recover_onto_tip; rc=$?` would
+            # abort the step at the call before `$?` is read).
+            rc=0; recover_onto_tip || rc=$?
+            [ "$rc" -eq 2 ] && exit 0   # external writer already published this exact formula
+            [ "$rc" -eq 0 ] || echo "::warning::recovery attempt ${attempt} failed (rc=${rc}), retrying"
           done
+          # Final push of the commit rebased onto the latest tip on the 3rd recovery.
+          git push origin HEAD:main && exit 0
           echo "::error::could not push formula after 3 attempts"; exit 1
