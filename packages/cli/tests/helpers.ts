@@ -163,7 +163,7 @@ export async function runCli(
   return { stdout, stderr, code };
 }
 
-/** Spawn the CLI's scan command hermetically and collect its output. */
+/** Run the CLI's scan command hermetically (delegates to runCli) and collect its output. */
 export async function runScan(
   scanArgs: string[],
   opts: { env?: Record<string, string> } = {},

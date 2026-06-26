@@ -93,7 +93,7 @@ describe("cli: error paths", () => {
 
 describe("cli: flag precedence", () => {
   // item 4: combined --version --help — version short-circuits first (R1 load order)
-  // Discovered empirically: stdout = "ccpz v0.8.0", exit 0 (version wins, help suppressed)
+  // version wins: stdout is exactly the version banner, exit 0, help suppressed.
   test("--version --help: version wins (R1 versionPlugin precedes helpPlugin)", async (): Promise<void> => {
     const { stdout, code } = await runCli(["--version", "--help"]);
     // version short-circuits; help output is suppressed
