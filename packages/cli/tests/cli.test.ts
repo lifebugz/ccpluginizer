@@ -1,33 +1,38 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import pkg from "../package.json";
-import { runCli, curatedEnv } from "./helpers.ts";
+import { runCli, curatedEnv, tempDir } from "./helpers.ts";
 
 describe("cli: version", () => {
   test("--version prints 'ccpz v<version>' and exits 0", async (): Promise<void> => {
     const { stdout, stderr, code } = await runCli(["--version"]);
     expect(code).toBe(0);
+    // Exact equality pins the full string, so a separate prefix regex would add
+    // no coverage (and would falsely assume a 3-segment shape pkg.version need not have).
     expect(stdout.trim()).toBe(`ccpz v${pkg.version}`);
-    expect(stdout).toMatch(/^ccpz v\d+\.\d+\.\d+/);
     // item 5: stderr must be empty on happy path
     expect(stderr).toBe("");
   });
 
   test("-v is an alias for --version", async (): Promise<void> => {
-    const { stdout, code } = await runCli(["-v"]);
+    const { stdout, stderr, code } = await runCli(["-v"]);
     expect(code).toBe(0);
     expect(stdout.trim()).toBe(`ccpz v${pkg.version}`);
+    // happy path: alias must be as clean as the long form (no stderr noise)
+    expect(stderr).toBe("");
   });
 
   // R1: version middleware must short-circuit before help. If help ran first, the
   // run-less root command would trigger help and print the subcommand list instead.
   test("--version short-circuits before help (no subcommand list)", async (): Promise<void> => {
     const { stdout } = await runCli(["--version"]);
-    // item 6: strengthen — assert BOTH "version printed" AND "help suppressed"
+    // "help suppressed" is proven by stdout being EXACTLY the one-line version
+    // banner: if help had run it would have appended the COMMANDS/scan/validate
+    // block. A single trimmed line equal to the banner rules that out directly,
+    // which a `not.toContain("validate")` proxy does not.
     expect(stdout.trim()).toBe(`ccpz v${pkg.version}`);
-    expect(stdout).not.toContain("validate");
+    expect(stdout.trim().split("\n")).toHaveLength(1);
   });
 });
 
@@ -42,10 +47,12 @@ describe("cli: help", () => {
   });
 
   test("-h is an alias for --help", async (): Promise<void> => {
-    const { stdout, code } = await runCli(["-h"]);
+    const { stdout, stderr, code } = await runCli(["-h"]);
     expect(code).toBe(0);
     expect(stdout).toContain("scan");
     expect(stdout).toContain("validate");
+    // happy path: alias must be as clean as the long form (no stderr noise)
+    expect(stderr).toBe("");
   });
 
   test("bare invocation prints help and exits 0", async (): Promise<void> => {
@@ -102,32 +109,36 @@ describe("cli: build-artifact version inlining", () => {
   // where `import pkg from "../package.json"` resolves at runtime. This test exercises the
   // actual codegen path that ships to npm / Homebrew / binary users.
   test("built bundle emits correct version (build-time inlining)", async (): Promise<void> => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "ccpz-build-test-"));
-    try {
-      // Build the CLI to a temp dir (no --compile needed; bun's bundler inlines JSON imports)
-      const buildResult = await Bun.build({
-        entrypoints: [join(import.meta.dirname, "../src/index.ts")],
-        target: "bun",
-        outdir: tmpDir,
-      });
-      expect(buildResult.success).toBe(true);
+    // tempDir() auto-registers cleanup on process exit — no try/finally rmSync needed.
+    const dir = tempDir("ccpz-build-test-");
+    // Build the CLI to a temp dir (no --compile needed; bun's bundler inlines JSON imports)
+    const buildResult = await Bun.build({
+      entrypoints: [join(import.meta.dirname, "../src/index.ts")],
+      target: "bun",
+      outdir: dir,
+    });
+    expect(buildResult.success).toBe(true);
 
-      const builtBundle = join(tmpDir, "index.js");
+    const builtBundle = join(dir, "index.js");
+    // Guard the output-naming assumption: if a future bun renames the entry output,
+    // fail here with a clear message instead of an opaque "bun run <missing file>".
+    expect(existsSync(builtBundle)).toBe(true);
 
-      // Spawn the BUILT artifact with the same hermetic env the harness uses
-      const proc = Bun.spawn([process.execPath, "run", builtBundle, "--version"], {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: curatedEnv(),
-        cwd: tmpDir,
-      });
-      const stdout = await new Response(proc.stdout).text();
-      const code = await proc.exited;
+    // Spawn the BUILT artifact with the same hermetic env the harness uses.
+    // Drain BOTH pipes (matching runCli) so a chatty/failing artifact can neither
+    // deadlock on a full stderr buffer nor swallow its own error diagnostics.
+    const proc = Bun.spawn([process.execPath, "run", builtBundle, "--version"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: curatedEnv(),
+      cwd: dir,
+    });
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const code = await proc.exited;
 
-      expect(code).toBe(0);
-      expect(stdout.trim()).toBe(`ccpz v${pkg.version}`);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout.trim()).toBe(`ccpz v${pkg.version}`);
   }, 15_000); // build adds ~1-2s; 15s timeout is generous
 });
