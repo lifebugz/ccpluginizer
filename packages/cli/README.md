@@ -59,6 +59,14 @@ ccpz scan <owner/repo>     # Generate a marketplace entry
 ccpz validate <entry.json> # Validate an entry against the schema
 ```
 
+Global flags:
+
+```bash
+ccpz --help      # or -h: show help (also shown for `ccpz` with no arguments)
+ccpz --version   # or -v: print the installed version
+ccpz scan --help # per-command help (same for `validate`)
+```
+
 To add a repo to the catalog, run `scan`, commit the JSON to `entries/<name>.json` in the catalog repo, and open a PR. See the catalog's [CONTRIBUTING.md](https://github.com/lifebugz/ccpluginizer/blob/main/CONTRIBUTING.md).
 
 `<owner/repo>` accepts either GitHub shorthand (`elysiajs/skills`) or a full URL (`https://github.com/elysiajs/skills`).
