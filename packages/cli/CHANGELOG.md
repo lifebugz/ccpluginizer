@@ -1,5 +1,11 @@
 # @ccpluginizer/ccpluginizer
 
+## 0.9.0
+
+### Minor Changes
+
+- [#43](https://github.com/lifebugz/ccpluginizer/pull/43) [`ebf3f23`](https://github.com/lifebugz/ccpluginizer/commit/ebf3f230870cd056cb501fb2aba076b88111d14d) Thanks [@lifebugz](https://github.com/lifebugz)! - Add top-level `--version`/`-v` and `--help`/`-h` flags to the `ccpz` CLI, plus per-command help for `scan`/`validate` and root help on bare invocation.
+
 ## 0.8.0
 
 ### Minor Changes
