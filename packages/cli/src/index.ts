@@ -11,7 +11,9 @@ import { validateCommand } from "./commands/validate.ts";
 
 const app = new Crust("ccpz")
   .meta({ description: "Pluginize non-plugin Claude Code repos" })
-  .use(versionPlugin(version)) // MUST precede helpPlugin — see plan Global Constraints (R1)
+  // Registration order is precedence order: the first matching plugin short-circuits.
+  // versionPlugin must precede helpPlugin so `--version --help` resolves to version, not help.
+  .use(versionPlugin(version))
   .use(helpPlugin())
   .command(scanCommand)
   .command(validateCommand);

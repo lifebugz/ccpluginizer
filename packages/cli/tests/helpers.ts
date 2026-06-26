@@ -145,17 +145,23 @@ export function curatedEnv(extra: Record<string, string> = {}): Record<string, s
   };
 }
 
-/** Spawn the CLI hermetically with arbitrary argv and collect its output. */
+/**
+ * Spawn the CLI hermetically with arbitrary argv and collect its output.
+ * `target` overrides the entrypoint (defaults to the TS source) so the same
+ * harness can also drive a freshly built artifact; `cwd` sets the child's
+ * working dir. Both are used by the build-artifact inlining test.
+ */
 export async function runCli(
   args: string[],
-  opts: { env?: Record<string, string> } = {},
+  opts: { env?: Record<string, string>; target?: string; cwd?: string } = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   // Launch via the absolute interpreter path; Bun resolves argv[0] against the child PATH,
   // so a bare "bun" token with a stripped PATH would throw ENOENT before the CLI runs.
-  const proc = Bun.spawn([process.execPath, "run", CLI, ...args], {
+  const proc = Bun.spawn([process.execPath, "run", opts.target ?? CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     env: curatedEnv(opts.env),
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
   });
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();

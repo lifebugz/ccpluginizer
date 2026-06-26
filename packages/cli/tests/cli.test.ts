@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import pkg from "../package.json";
-import { runCli, curatedEnv, tempDir } from "./helpers.ts";
+import { runCli, tempDir } from "./helpers.ts";
 
 describe("cli: version", () => {
   test("--version prints 'ccpz v<version>' and exits 0", async (): Promise<void> => {
@@ -111,31 +111,40 @@ describe("cli: build-artifact version inlining", () => {
   test("built bundle emits correct version (build-time inlining)", async (): Promise<void> => {
     // tempDir() auto-registers cleanup on process exit — no try/finally rmSync needed.
     const dir = tempDir("ccpz-build-test-");
-    // Build the CLI to a temp dir (no --compile needed; bun's bundler inlines JSON imports)
+    // Build with the SAME flags as the production build script (package.json "build":
+    // --target bun --format esm) so this exercises the exact codegen path that ships.
     const buildResult = await Bun.build({
       entrypoints: [join(import.meta.dirname, "../src/index.ts")],
       target: "bun",
+      format: "esm",
       outdir: dir,
     });
     expect(buildResult.success).toBe(true);
 
-    const builtBundle = join(dir, "index.js");
-    // Guard the output-naming assumption: if a future bun renames the entry output,
-    // fail here with a clear message instead of an opaque "bun run <missing file>".
+    // Derive the emitted entry path from the build result instead of hardcoding a
+    // filename: this survives a future bun renaming the entry output.
+    const entry = buildResult.outputs.find((o) => o.kind === "entry-point");
+    if (entry === undefined) throw new Error("build emitted no entry-point output");
+    const builtBundle = entry.path;
     expect(existsSync(builtBundle)).toBe(true);
 
-    // Spawn the BUILT artifact with the same hermetic env the harness uses.
-    // Drain BOTH pipes (matching runCli) so a chatty/failing artifact can neither
-    // deadlock on a full stderr buffer nor swallow its own error diagnostics.
-    const proc = Bun.spawn([process.execPath, "run", builtBundle, "--version"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: curatedEnv(),
-      cwd: dir,
-    });
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
-    const code = await proc.exited;
+    // Structural regression guard for the bundle-leak bug (named vs default JSON import):
+    // bun ALWAYS inlines JSON imports as object literals, so the real risk is WHICH fields
+    // get inlined. A default `import pkg` would inline the whole package.json (scripts +
+    // devDependencies); the named `import { version }` must inline only the version string.
+    const bundleText = await Bun.file(builtBundle).text();
+    expect(bundleText).toContain(pkg.version); // version IS inlined
+    expect(bundleText).not.toContain("devDependencies"); // whole package.json must not leak
+    expect(bundleText).not.toContain("package_default"); // no default-namespace JSON object
+    expect(bundleText).not.toContain("scripts"); // package.json "scripts" must not leak
+    expect(bundleText).not.toContain("prepublishOnly"); // a scripts key must not leak
+    expect(bundleText).not.toContain("typescript-eslint"); // a devDependency value must not leak
+
+    // Behavioral half: run the BUILT artifact through the shared runCli harness
+    // (target override = the freshly built bundle, cwd = its temp dir) and confirm it
+    // executes and prints the version. Reusing runCli keeps the hermetic env + dual-pipe
+    // drain in one place instead of re-implementing the spawn here.
+    const { stdout, stderr, code } = await runCli(["--version"], { target: builtBundle, cwd: dir });
 
     expect(stderr).toBe("");
     expect(code).toBe(0);
