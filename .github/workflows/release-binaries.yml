@@ -156,8 +156,8 @@ jobs:
           mkdir -p tap/Formula
           render_formula tap/Formula/ccpz.rb
           cd tap
-          git config user.name  "ccpluginizer-release-bot[bot]"
-          git config user.email "283500925+ccpluginizer-release-bot[bot]@users.noreply.github.com"
+          git config user.name  "lifebugz-release-bot[bot]"
+          git config user.email "283500925+lifebugz-release-bot[bot]@users.noreply.github.com"
           git add Formula/ccpz.rb
           git diff --cached --quiet && { echo "formula unchanged"; exit 0; }
           git commit -m "ccpz ${VERSION}"
